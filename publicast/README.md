@@ -26,6 +26,7 @@ contenido multimedia, información y anuncios desde un servidor central a pantal
 | **Programación** | Repetición **siempre (bucle)**, **diaria**, **semanal** o **fechas y horas personalizadas**; eventos por días, franja horaria (incluso nocturna, p. ej. 22:00–06:00), rango de fechas, prioridad y pantallas o videowalls destino. Tabla con **miniatura**, **fecha** y **horario** de cada evento, reloj en vivo y **vista semanal**. |
 | **Pantallas** | Emparejamiento seguro con código de 6 dígitos, número de pantalla, estado en línea/desconectada, qué se está reproduciendo, modelo, resolución, espacio libre, orientación, comandos *Identificar* y *Recargar*. |
 | **Sucursales** | Grupos de pantallas por local o zona: programación, anuncios y filtros por sucursal. |
+| **YouTube / Reels** | Enlaces de YouTube, Shorts, TikTok, Vimeo y Facebook con reproducción automática (YouTube avisa del final para pasar al siguiente), o **descarga a MP4** con yt-dlp (también Reels de Instagram) para reproducir sin Internet. |
 | **HTML local** | Archivos `.html` sueltos, carpetas completas (con imágenes/CSS/JS) o rutas `file:///` del equipo servidor; se reproducen sin conexión y aislados (sandbox). |
 | **Transiciones** | Fundido, deslizar en 4 direcciones, zoom o corte, con duración configurable, demostración en vivo y transición propia por contenido. |
 | **Vista de pantallas** | Miniatura con la captura real de cada pantalla (cada 5 min o al pedirla) y simulación en vivo del contenido. |
@@ -163,6 +164,18 @@ o indique la ruta con la variable `FFMPEG_PATH`).
 Ajustes del Fire TV: desactivar la reproducción automática del contenido destacado, salvapantallas
 en "Nunca", desactivar la recopilación de datos de uso, cerrar/desinstalar apps que no se usen,
 alimentarlo con su propio cargador y reiniciarlo una vez al día.
+
+## Videos de YouTube y Reels
+
+- **En línea:** Biblioteca → *▶️ YouTube / Reels* → pegue el enlace → *Agregar*. Se usa el reproductor oficial
+  incrustado con reproducción automática y sin controles. Las pantallas necesitan Internet; si el dueño del video
+  no permite incrustarlo, se salta.
+- **Descargar al servidor (recomendado):** requiere [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+  (`winget install yt-dlp` en Windows, o indique la ruta en `YTDLP_PATH`). El video se guarda como MP4 ≤ 1080p
+  (con ffmpeg instalado se combinan audio y video en H.264).
+- Si YouTube pide verificar que no es un robot, o Instagram pide iniciar sesión: inicie sesión en **Firefox** en el
+  equipo del servidor y arranque con `set YTDLP_COOKIES_FROM_BROWSER=firefox` (o `YTDLP_COOKIES=C:\ruta\cookies.txt`).
+- Use sólo videos propios o con permiso del autor para emitirlos públicamente.
 
 ## Videowall paso a paso
 

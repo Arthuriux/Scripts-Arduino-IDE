@@ -43,6 +43,17 @@ pages.ayuda = async (main) => {
       title: 'Biblioteca de contenidos',
       body: [
         h('p', null, 'Arrastre archivos a la zona de subida o haga clic para elegirlos. Formatos: JPG, PNG, GIF animado, WebP, MP4, WebM, MKV y MOV.'),
+        h(
+          'p',
+          null,
+          h('b', null, '▶️ YouTube / Reels: '),
+          'pegue el enlace de YouTube, Shorts, TikTok, Vimeo, Facebook o Instagram. Hay dos opciones: ',
+          h('b', null, 'reproducción en línea'),
+          ' (arranca sola, sin controles; con YouTube pasa al siguiente contenido cuando termina el video; las pantallas necesitan Internet) o ',
+          h('b', null, 'descargar al servidor'),
+          ' (se guarda como MP4: funciona sin Internet, va más fluido en Fire TV y es la única forma para los Reels de Instagram; requiere "winget install yt-dlp" en el servidor).'
+        ),
+        tip('Si YouTube o Instagram piden iniciar sesión al descargar, inicie sesión en Firefox en el equipo del servidor y arranque el servidor con "set YTDLP_COOKIES_FROM_BROWSER=firefox". En el navegador, los videos en línea empiezan en silencio (lo exige el navegador); en la app Android suenan normalmente salvo que marque "Sin sonido".'),
         h('ul', null, h('li', null, h('b', null, '📄 HTML local: '), 'suba un archivo .html, una carpeta completa (con sus imágenes, CSS y JS) o pegue una ruta como file:///C:/Users/…/pagina.html si el archivo está en el equipo del servidor. Se copia al servidor y las pantallas lo guardan para mostrarlo sin Internet.'), h('li', null, h('b', null, '🌐 Página web: '), 'muestra una URL a pantalla completa (menús digitales, tableros, redes sociales).'), h('li', null, h('b', null, '🔤 Mensaje de texto: '), 'título y texto con los colores que elija, sin necesidad de diseñar una imagen.')),
         h('p', null, 'La "duración" es el tiempo que se muestra cada imagen. En videos, 0 = se reproduce completo.'),
         tip('Resolución recomendada: 1920 × 1080 (horizontal) o 1080 × 1920 (vertical). Videos en MP4 (H.264).'),

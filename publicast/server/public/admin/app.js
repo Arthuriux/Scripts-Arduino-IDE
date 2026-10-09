@@ -120,8 +120,8 @@ const ago = (iso) => {
   return `hace ${Math.round(s / 86400)} d`;
 };
 const DAYS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
-const TYPE_LABEL = { image: 'Imagen', video: 'Video', web: 'Página web', text: 'Texto', html: 'HTML local' };
-const TYPE_ICON = { image: '🖼️', video: '🎬', web: '🌐', text: '🔤', html: '📄' };
+const TYPE_LABEL = { image: 'Imagen', video: 'Video', web: 'Página web', text: 'Texto', html: 'HTML local', stream: 'Video en línea' };
+const TYPE_ICON = { image: '🖼️', video: '🎬', web: '🌐', text: '🔤', html: '📄', stream: '▶️' };
 
 function field(label, input, hint) {
   return h('label', null, label, input, hint ? h('small', { class: 'muted' }, hint) : null);
@@ -205,6 +205,12 @@ function previewContent(key, title, portrait) {
 }
 
 function thumbFor(m, cls = 'thumb') {
+  if (m.type === 'stream') {
+    const t = m.stream && PCStream.thumbnail(m.stream);
+    const label = PCStream.PROVIDERS[m.stream?.provider]?.label || 'En línea';
+    return h('div', { class: cls + ' stream' }, t ? h('img', { src: t, loading: 'lazy', alt: '' }) : h('span', { class: 'prov' }, label), h('span', { class: 'play' }, '▶'), cls === 'thumb' ? h('span', { class: 'type' }, label) : null);
+  }
+  if (m.type === 'video' && m.downloading) return h('div', { class: cls }, '⏳', cls === 'thumb' ? h('span', { class: 'type' }, 'Descargando') : null);
   if (m.type === 'image') return h('div', { class: cls }, h('img', { src: m.url, loading: 'lazy', alt: '' }), cls === 'thumb' ? h('span', { class: 'type' }, 'Imagen') : null);
   if (m.type === 'video')
     return h('div', { class: cls }, h('video', { src: m.url + '#t=1', muted: true, preload: 'metadata' }), cls === 'thumb' ? h('span', { class: 'type' }, 'Video') : null);
@@ -611,7 +617,7 @@ pages.biblioteca = async (main) => {
     const media = await api('GET', '/api/media');
     const list = media.filter((m) => filter === 'all' || m.type === filter).reverse();
     clearInterval(refreshTimer);
-    if (media.some((m) => m.optimizing)) refreshTimer = setInterval(() => load().catch(() => {}), 5000);
+    if (media.some((m) => m.optimizing || m.downloading)) refreshTimer = setInterval(() => load().catch(() => {}), 5000);
     mount(grid, ...(list.length ? list.map((m) => mediaCard(m, load)) : [h('div', { class: 'empty' }, 'No hay contenidos todavía.')]));
   };
 
@@ -669,6 +675,7 @@ pages.biblioteca = async (main) => {
       ['video', 'Videos'],
       ['web', 'Web'],
       ['html', 'HTML'],
+      ['stream', 'En línea'],
       ['text', 'Texto'],
     ].map(([v, l]) =>
       h(
@@ -691,6 +698,7 @@ pages.biblioteca = async (main) => {
     pageHead(
       'Biblioteca',
       'Imágenes, videos, páginas web, HTML locales y mensajes de texto',
+      h('button', { class: 'btn primary', onclick: () => streamDialog(null, load) }, '▶️ YouTube / Reels'),
       h('button', { class: 'btn', onclick: () => htmlDialog(load) }, '📄 HTML local'),
       h('button', { class: 'btn', onclick: () => widgetEditor('web', null, load) }, '🌐 Página web'),
       h('button', { class: 'btn', onclick: () => widgetEditor('text', null, load) }, '🔤 Mensaje de texto')
@@ -701,6 +709,95 @@ pages.biblioteca = async (main) => {
   );
   await load();
 };
+
+/** YouTube, Shorts, TikTok, Vimeo, Facebook o Instagram: reproducción en línea o descarga al servidor. */
+function streamDialog(m, reload) {
+  const urlIn = h('input', { placeholder: 'https://www.youtube.com/watch?v=…  ·  https://youtube.com/shorts/…  ·  https://www.instagram.com/reel/…', value: m?.stream?.url || '' });
+  const nameIn = h('input', { placeholder: 'Nombre (opcional)', value: m?.name || '' });
+  const muteIn = h('input', { type: 'checkbox', checked: !!m?.stream?.mute });
+  const durIn = h('input', { type: 'number', min: 0, value: m ? m.duration : 0, style: { maxWidth: '140px' } });
+  const durHint = h('small', { class: 'muted' });
+  const detected = h('div');
+  const preview = h('div', { class: 'stream-preview' });
+  const addBtn = h('button', { class: 'btn primary' }, m ? '💾 Guardar' : '▶ Agregar (reproducción en línea)');
+  const dlBtn = h('button', { class: 'btn', title: systemInfo.ytdlp ? '' : 'Requiere yt-dlp en el servidor' }, '⬇️ Descargar al servidor');
+  let info = null;
+  let timer = null;
+  const update = () => {
+    info = PCStream.parse(urlIn.value);
+    const prov = info && PCStream.PROVIDERS[info.provider];
+    if (!info) {
+      mount(detected, urlIn.value.trim() ? h('div', { class: 'error' }, 'Enlace no reconocido. Se admiten YouTube, Shorts, TikTok, Vimeo, Facebook e Instagram.') : null);
+      mount(preview);
+      addBtn.disabled = true;
+      return;
+    }
+    mount(
+      detected,
+      h('span', { class: 'badge ok' }, '✓ ' + prov.label + (info.id ? ' · ' + info.id : '')),
+      !prov.autoplay ? h('div', { class: 'warn-line' }, '⚠️ ' + prov.label + ' no permite la reproducción automática incrustada: use "Descargar al servidor".') : null,
+      !prov.endDetect && info.provider !== 'instagram' ? h('div', { class: 'muted small' }, prov.label + ' no avisa cuándo termina el video: indique su duración en segundos.') : null
+    );
+    addBtn.disabled = !prov.autoplay;
+    durHint.textContent = prov.endDetect ? '0 = hasta que termine el video' : 'Segundos que se muestra';
+    if (!prov.endDetect && Number(durIn.value) === 0) durIn.value = 30;
+    clearTimeout(timer);
+    // Vista previa (siempre en silencio para que el navegador permita la reproducción automática)
+    timer = setTimeout(() => prov.autoplay && mount(preview, h('iframe', { src: PCStream.wrapperPath({ ...info, mute: true }), allow: 'autoplay; encrypted-media' })), 500);
+  };
+  urlIn.addEventListener('input', update);
+  addBtn.addEventListener('click', () =>
+    guard(async () => {
+      if (!info) return;
+      const body = { type: 'stream', url: urlIn.value.trim(), name: nameIn.value, mute: muteIn.checked, duration: durIn.value };
+      if (m) await api('PUT', '/api/media/' + m.id, body);
+      else await api('POST', '/api/media/widget', body);
+      closeModal();
+      toast(m ? 'Guardado' : 'Video en línea agregado');
+      reload();
+    })
+  );
+  dlBtn.addEventListener('click', () =>
+    guard(async () => {
+      if (!urlIn.value.trim()) return toast('Pegue el enlace del video', true);
+      await api('POST', '/api/media/download', { url: urlIn.value.trim(), name: nameIn.value });
+      closeModal();
+      toast('Descargando el video al servidor. Aparecerá en la biblioteca al terminar.');
+      reload();
+    })
+  );
+  modal(
+    h(
+      'div',
+      { class: 'form' },
+      h('h2', null, m ? 'Editar video en línea' : '▶️ Agregar video de YouTube, Shorts, TikTok o Reels'),
+      field('Enlace del video', urlIn),
+      detected,
+      h('div', { class: 'row' }, field('Nombre', nameIn), h('div', { class: 'shrink' }, field('Duración (s)', durIn, durHint)), h('div', { class: 'checks shrink' }, h('label', null, muteIn, '🔇 Sin sonido'))),
+      preview,
+      h(
+        'div',
+        { class: 'grid cols-2' },
+        h('div', { class: 'card' }, h('h3', { style: { marginTop: 0 } }, '▶ Reproducción en línea'), h('p', { class: 'muted' }, 'Se reproduce automáticamente desde YouTube/TikTok/Vimeo/Facebook. Las pantallas necesitan Internet. Si el dueño del video no permite incrustarlo, se salta.'), addBtn),
+        m
+          ? null
+          : h(
+              'div',
+              { class: 'card' },
+              h('h3', { style: { marginTop: 0 } }, '⬇️ Descargar al servidor (recomendado)'),
+              h('p', { class: 'muted' }, 'Se guarda como video MP4: funciona sin Internet, va más fluido en Fire TV y sirve también para Reels de Instagram.'),
+              systemInfo.ytdlp ? null : h('div', { class: 'warn-line' }, '⚠️ Requiere yt-dlp en el servidor: en Windows ejecute "winget install yt-dlp" y reinicie el servidor.'),
+              dlBtn
+            )
+      ),
+      h('div', { class: 'muted small' }, 'Use sólo videos propios o con permiso de su autor para emitirlos públicamente.'),
+      h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: closeModal }, 'Cerrar'))
+    ),
+    { wide: true }
+  );
+  update();
+  urlIn.focus();
+}
 
 async function importHtmlPath(p, name, reload) {
   await guard(async () => {
@@ -799,6 +896,9 @@ function mediaCard(m, reload) {
       m.optimized ? h('span', { class: 'badge ok' }, '⚡ Optimizado para TV') : null,
       m.optimizing ? h('span', { class: 'badge blue' }, '⏳ Optimizando… (puede tardar varios minutos)') : null,
       m.optimizeError ? h('div', { class: 'error small' }, 'No se pudo optimizar: ' + m.optimizeError) : null,
+      m.downloading ? h('span', { class: 'badge blue' }, '⏳ Descargando del enlace… (puede tardar unos minutos)') : null,
+      m.downloadError ? h('div', { class: 'error small' }, 'No se pudo descargar: ' + m.downloadError) : null,
+      m.type === 'stream' ? h('div', { class: 'muted small' }, (m.stream?.mute ? '🔇 Sin sonido' : '🔊 Con sonido') + ' · ' + (m.duration > 0 ? m.duration + ' s' : 'hasta que termine')) : null,
       warnings.map((w) => h('div', { class: 'warn-line' }, '⚠️ ' + w)),
       h('div', { class: 'muted' }, [TYPE_LABEL[m.type], m.size ? fmtBytes(m.size) : m.url, m.usedIn ? `en ${m.usedIn} lista(s)` : 'sin usar'].filter(Boolean).join(' · ')),
       h('div', { class: 'row' }, h('label', { class: 'shrink' }, 'Duración (s)', dur)),
@@ -826,9 +926,9 @@ function mediaCard(m, reload) {
           'button',
           {
             class: 'btn small',
-            onclick: () => (m.type === 'web' || m.type === 'text' ? widgetEditor(m.type, m, reload) : renameMedia(m, reload)),
+            onclick: () => (m.type === 'stream' ? streamDialog(m, reload) : m.type === 'web' || m.type === 'text' ? widgetEditor(m.type, m, reload) : renameMedia(m, reload)),
           },
-          m.type === 'web' || m.type === 'text' ? 'Editar' : 'Renombrar'
+          m.type === 'web' || m.type === 'text' || m.type === 'stream' ? 'Editar' : 'Renombrar'
         ),
         h(
           'button',

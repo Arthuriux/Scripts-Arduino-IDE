@@ -18,7 +18,10 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
@@ -45,6 +48,8 @@ import java.util.concurrent.ExecutorService
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class RegionPlayer(
     private val activity: Activity,
+    /** Dirección del servidor: los videos en línea se abren con su página /player/embed.html */
+    private val serverUrl: String,
     private val container: FrameLayout,
     private val items: List<Item>,
     playlist: Playlist,
@@ -101,6 +106,7 @@ class RegionPlayer(
     private fun durationOf(item: Item): Int = when {
         item.duration > 0 -> item.duration
         item.type == "video" -> if (item.naturalDuration > 0) item.naturalDuration else 30
+        item.type == "stream" -> 30
         else -> 10
     }
 
@@ -136,7 +142,7 @@ class RegionPlayer(
             waitMs = durationOf(item) * 1000L
         }
         // Un único contenido estático: no se vuelve a dibujar para evitar parpadeos
-        if (items.size == 1 && current?.id == item.id && item.type != "video" && currentView != null) {
+        if (items.size == 1 && current?.id == item.id && item.type != "video" && item.type != "stream" && currentView != null) {
             beginStat(item)
             handler.postDelayed(advance, waitMs)
             return
@@ -185,6 +191,17 @@ class RegionPlayer(
                 show(view, item)
                 // Sin videowall: duración 0 = video completo (límite de seguridad de 3 h)
                 handler.postDelayed(advance, if (sync || item.duration > 0) waitMs else 3 * 3600 * 1000L)
+            }
+            "stream" -> {
+                // Video en línea (YouTube, TikTok…): la página embed.html avisa por el puente cuándo termina
+                val wv = createWebView(serverUrl + (item.url ?: ""), local = false, bridge = Bridge(t))
+                if (wv == null) {
+                    handler.postDelayed(advance, 1000)
+                    return
+                }
+                show(wv, item)
+                val untilEnd = item.duration <= 0 && item.streamProvider == "youtube"
+                handler.postDelayed(advance, if (sync || item.duration > 0) waitMs else if (untilEnd) 3 * 3600 * 1000L else 30_000L)
             }
             "web", "html" -> {
                 // HTML local: se abre la copia descargada (funciona sin conexión, con sus imágenes y estilos)
@@ -370,16 +387,40 @@ class RegionPlayer(
         }
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun createWebView(url: String, local: Boolean = false): WebView? = try {
+    /** Recibe los avisos de /player/embed.html: "ended" (terminó) o "error" (no se puede reproducir). */
+    inner class Bridge(private val forToken: Int) {
+        @JavascriptInterface
+        fun event(name: String, detail: String) {
+            handler.post {
+                if (stopped || forToken != token || current?.type != "stream") return@post
+                when (name) {
+                    "ended" -> if ((current?.duration ?: 0) <= 0 && !sync) next()
+                    "error" -> {
+                        Log.w(TAG, "Video en línea no disponible: $detail")
+                        handler.removeCallbacks(advance)
+                        handler.postDelayed(advance, 1500)
+                    }
+                }
+            }
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
+    private fun createWebView(url: String, local: Boolean = false, bridge: Bridge? = null): WebView? = try {
         WebView(activity).apply {
             settings.allowFileAccess = local
+            if (bridge != null) addJavascriptInterface(bridge, "PubliCastBridge")
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
             settings.loadWithOverviewMode = true
             settings.useWideViewPort = true
-            webViewClient = WebViewClient()
+            webViewClient = object : WebViewClient() {
+                override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                    // Sin conexión con la página principal: se pasa al siguiente contenido
+                    if (request.isForMainFrame && bridge != null) bridge.event("error", "sin conexión")
+                }
+            }
             webChromeClient = WebChromeClient()
             setBackgroundColor(Color.WHITE)
             isFocusable = false

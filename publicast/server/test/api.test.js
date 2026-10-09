@@ -322,6 +322,26 @@ test('sucursales, repetición personalizada, HTML local, capturas y consumo', as
   assert.ok(!fs.existsSync(path.join(dataDir, 'media', 'html', html.dir)));
 });
 
+test('videos en línea (YouTube, Reels) y descarga con yt-dlp', async () => {
+  assert.equal((await call('POST', '/api/media/widget', { type: 'stream', url: 'https://example.com/video' })).status, 400);
+  const yt = await call('POST', '/api/media/widget', { type: 'stream', url: 'https://youtu.be/dQw4w9WgXcQ', mute: true });
+  assert.equal(yt.status, 200);
+  assert.equal(yt.body.stream.provider, 'youtube');
+  assert.equal(yt.body.stream.id, 'dQw4w9WgXcQ');
+  assert.equal(yt.body.duration, 0); // hasta que termine
+  const tk = await call('POST', '/api/media/widget', { type: 'stream', url: 'https://www.tiktok.com/@marca/video/7234567890123456789' });
+  assert.equal(tk.body.duration, 30); // TikTok no avisa del final
+  const pl = await call('POST', '/api/playlists', { name: 'En línea', items: [{ mediaId: yt.body.id }, { mediaId: tk.body.id }] });
+  const p = (await call('GET', '/api/preview?content=p:' + pl.body.id)).body.playlists[pl.body.id];
+  assert.match(p.items[0].url, /^\/player\/embed\.html\?p=youtube&id=dQw4w9WgXcQ/);
+  assert.match(p.items[0].url, /mute=1/);
+  const embed = await fetch(base + p.items[0].url);
+  assert.equal(embed.status, 200);
+  assert.equal(embed.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
+  const sys = await call('GET', '/api/system');
+  if (!sys.body.ytdlp) assert.match((await call('POST', '/api/media/download', { url: 'https://youtu.be/dQw4w9WgXcQ' })).body.error, /yt-dlp/);
+});
+
 test('al eliminar contenido se quita de las listas', async () => {
   assert.equal((await call('DELETE', '/api/media/' + imageId)).status, 200);
   const pls = await call('GET', '/api/playlists');

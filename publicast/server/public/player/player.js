@@ -356,12 +356,14 @@
       });
       this.active = 0;
       this.stopped = false;
+      this.cleanups = [];
       this.next();
     }
 
     stop() {
       this.stopped = true;
       clearTimeout(this.timer);
+      this.cleanups.splice(0).forEach((f) => f());
       this.finishStat();
       this.layers.forEach((l) => {
         l.querySelector('video')?.pause();
@@ -384,6 +386,7 @@
     next() {
       if (this.stopped) return;
       clearTimeout(this.timer);
+      this.cleanups.splice(0).forEach((f) => f());
       this.finishStat();
       let item;
       let offset = 0;
@@ -398,7 +401,7 @@
         this.index++;
       }
       // Un único contenido estático: no se vuelve a dibujar para evitar parpadeos
-      if (this.items.length === 1 && this.current && this.current.id === item.id && item.type !== 'video') {
+      if (this.items.length === 1 && this.current && this.current.id === item.id && item.type !== 'video' && item.type !== 'stream') {
         this.beginStat(item);
         this.timer = setTimeout(() => this.next(), (remaining || durationOf(item)) * 1000);
         return;
@@ -444,6 +447,22 @@
           this.timer = setTimeout(advance, item.duration > 0 ? item.duration * 1000 : 3 * 3600 * 1000);
         }
         el.play().catch(() => {});
+      } else if (item.type === 'stream') {
+        // Video en línea: la página embed.html avisa con postMessage cuando termina o falla
+        el = document.createElement('iframe');
+        el.src = BASE + item.url;
+        el.setAttribute('allow', 'autoplay; encrypted-media; fullscreen');
+        const frame = el;
+        const onMsg = (ev) => {
+          if (ev.source !== frame.contentWindow || !ev.data || !ev.data.publicast) return;
+          if (ev.data.publicast === 'ended' && !(item.duration > 0)) advance();
+          if (ev.data.publicast === 'error') setTimeout(advance, 1500);
+        };
+        window.addEventListener('message', onMsg);
+        this.cleanups.push(() => window.removeEventListener('message', onMsg));
+        const untilEnd = item.stream?.provider === 'youtube';
+        // duración 0 = hasta que termine (YouTube); los demás servicios no avisan: 30 s por defecto
+        this.timer = setTimeout(advance, item.duration > 0 ? item.duration * 1000 : untilEnd ? 3 * 3600 * 1000 : 30000);
       } else if (item.type === 'web' || item.type === 'html') {
         el = document.createElement('iframe');
         el.src = item.type === 'html' ? BASE + item.url : item.url;

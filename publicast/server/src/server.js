@@ -17,6 +17,7 @@ const { WebSocketServer } = require('ws');
 const { Store, newId } = require('./db');
 const auth = require('./auth');
 const PCSchedule = require('../public/shared/schedule');
+const PCStream = require('../public/shared/stream');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
@@ -55,6 +56,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     // Una optimización interrumpida por un reinicio del servidor no debe quedar "en curso"
     db.get('media').forEach((m) => {
       if (m.optimizing) m.optimizing = false;
+      if (m.downloading) Object.assign(m, { downloading: false, downloadError: 'La descarga se interrumpió al reiniciar el servidor' });
     });
     db.get('schedules').forEach((s) => {
       if (!s.content && s.playlistId) s.content = 'p:' + s.playlistId;
@@ -338,6 +340,13 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
         },
       };
     }
+    if (type === 'stream') {
+      // Video en línea (YouTube, Shorts, TikTok, Vimeo, Facebook…) con reproducción automática
+      const info = PCStream.parse(body.url || body.stream?.url);
+      if (!info) throw new Error('Pegue un enlace de YouTube, YouTube Shorts, TikTok, Vimeo, Facebook o Instagram');
+      const mute = body.mute !== undefined ? !!body.mute : body.stream?.mute !== undefined ? !!body.stream.mute : false;
+      return { url: info.url, stream: { provider: info.provider, id: info.id, url: info.url, mute } };
+    }
     throw new Error('Tipo de widget no válido');
   }
 
@@ -346,8 +355,13 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     const type = body.type;
     try {
       const fields = widgetFields(body, type);
-      const name = str(body.name, 200) || (type === 'web' ? fields.url : fields.text.title) || 'Widget';
-      res.json(db.insert('media', { name, type, duration: num(body.duration, 15, 1), ...fields }));
+      const name =
+        str(body.name, 200) ||
+        (type === 'web' ? fields.url : type === 'stream' ? `${PCStream.PROVIDERS[fields.stream.provider].label} · ${fields.stream.id || 'video'}` : fields.text.title) ||
+        'Widget';
+      // En videos en línea, duración 0 = hasta que termine (YouTube avisa del final)
+      const duration = type === 'stream' ? num(body.duration, fields.stream.provider === 'youtube' ? 0 : 30, 0) : num(body.duration, 15, 1);
+      res.json(db.insert('media', { name, type, duration, ...fields }));
     } catch (e) {
       bad(res, e.message);
     }
@@ -367,7 +381,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
       if (req.body.height !== undefined) patch.height = num(req.body.height, 0, 0, 20000);
     }
     try {
-      if (m.type === 'web' || m.type === 'text') Object.assign(patch, widgetFields({ ...m, ...req.body }, m.type));
+      if (m.type === 'web' || m.type === 'text' || m.type === 'stream') Object.assign(patch, widgetFields({ ...m, ...req.body }, m.type));
     } catch (e) {
       return bad(res, e.message);
     }
@@ -498,7 +512,103 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
   const optimizeQueue = [];
   let optimizing = false;
 
-  app.get('/api/system', requireAdmin, (req, res) => res.json({ ffmpeg: ffmpegOk }));
+  // ---------- Descarga de videos de YouTube / Reels con yt-dlp ----------
+  const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
+  let ytdlpOk = false;
+  require('child_process')
+    .spawn(YTDLP, ['--version'], { stdio: 'ignore' })
+    .on('error', () => (ytdlpOk = false))
+    .on('close', (code) => (ytdlpOk = code === 0));
+  const downloadQueue = [];
+  let downloading = false;
+
+  app.get('/api/system', requireAdmin, (req, res) => res.json({ ffmpeg: ffmpegOk, ytdlp: ytdlpOk }));
+
+  /** Descarga el video del enlace como MP4 (≤1080p) y lo agrega a la biblioteca como video normal. */
+  app.post('/api/media/download', requireAdmin, (req, res) => {
+    const url = str(req.body?.url, 2000);
+    if (!/^https?:\/\//i.test(url)) return bad(res, 'Pegue el enlace del video');
+    if (!ytdlpOk)
+      return bad(res, 'yt-dlp no está instalado en el servidor. En Windows ejecute "winget install yt-dlp" (o descárguelo de github.com/yt-dlp/yt-dlp) y reinicie el servidor.');
+    const info = PCStream.parse(url);
+    const m = db.insert('media', {
+      name: str(req.body?.name, 200) || (info ? `${PCStream.PROVIDERS[info.provider].label} · ${info.id || 'video'}` : 'Video descargado'),
+      type: 'video',
+      file: null,
+      sourceUrl: url,
+      downloading: true,
+      duration: 0,
+    });
+    downloadQueue.push(m.id);
+    runDownloadQueue();
+    res.json(m);
+  });
+
+  function runDownloadQueue() {
+    if (downloading || !downloadQueue.length) return;
+    const m = db.find('media', downloadQueue.shift());
+    if (!m) return runDownloadQueue();
+    downloading = true;
+    const base = path.join(tmpDir, 'dl-' + m.id);
+    const fmt = ffmpegOk
+      ? 'bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b'
+      : 'b[height<=1080][ext=mp4]/b[ext=mp4]/b';
+    const args = ['--no-playlist', '--no-simulate', '--print', '%(title)s', '-f', fmt, '--merge-output-format', 'mp4', '-o', base + '.%(ext)s', m.sourceUrl];
+    if (ffmpegOk && process.env.FFMPEG_PATH) args.unshift('--ffmpeg-location', FFMPEG);
+    // Sesión del navegador para YouTube ("no soy un robot") o Instagram (inicio de sesión)
+    if (process.env.YTDLP_COOKIES_FROM_BROWSER) args.unshift('--cookies-from-browser', process.env.YTDLP_COOKIES_FROM_BROWSER);
+    else if (process.env.YTDLP_COOKIES) args.unshift('--cookies', process.env.YTDLP_COOKIES);
+    log(`Descargando video: ${m.sourceUrl}`);
+    const proc = require('child_process').spawn(YTDLP, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    proc.stdout.on('data', (d) => (out += d));
+    proc.stderr.on('data', (d) => (err = (err + d).slice(-2000)));
+    const done = async (ok, message) => {
+      downloading = false;
+      const produced = fs.readdirSync(tmpDir).filter((f) => f.startsWith('dl-' + m.id + '.'));
+      const video = produced.find((f) => /\.(mp4|webm|mkv|mov)$/i.test(f) && !/\.part$/.test(f));
+      const cur = db.find('media', m.id);
+      if (ok && video && cur) {
+        const ext = path.extname(video).toLowerCase();
+        const file = newId() + ext;
+        fs.renameSync(path.join(tmpDir, video), path.join(mediaDir, file));
+        const size = fs.statSync(path.join(mediaDir, file)).size;
+        const title = out.split('\n').map((l) => l.trim()).filter(Boolean)[0];
+        db.update('media', m.id, {
+          file,
+          mime: ext === '.webm' ? 'video/webm' : 'video/mp4',
+          size,
+          md5: await md5File(path.join(mediaDir, file)),
+          downloading: false,
+          downloadError: '',
+          name: cur.name.includes(' · ') && title ? title.slice(0, 200) : cur.name,
+        });
+        changed('media');
+        log(`Video descargado: ${title || m.sourceUrl} (${Math.round(size / 1048576)} MB)`);
+      } else if (cur) {
+        db.update('media', m.id, { downloading: false, downloadError: message || 'No se pudo descargar' });
+        log(`No se pudo descargar ${m.sourceUrl}: ${message}`);
+      }
+      produced.forEach((f) => fs.existsSync(path.join(tmpDir, f)) && fs.rm(path.join(tmpDir, f), { force: true }, () => {}));
+      runDownloadQueue();
+    };
+    proc.on('error', (e) => done(false, e.message));
+    proc.on('close', (code) => (code === 0 ? done(true) : done(false, explainYtdlpError(err))));
+  }
+
+  /** Traduce los errores habituales de yt-dlp a un mensaje con la solución. */
+  function explainYtdlpError(err) {
+    const line = (err.split('\n').filter((l) => /ERROR/.test(l)).pop() || err.split('\n').filter(Boolean).pop() || 'Error de yt-dlp').trim();
+    const cookies = 'Inicie sesión en YouTube/Instagram en Firefox en el equipo del servidor y arranque el servidor con "set YTDLP_COOKIES_FROM_BROWSER=firefox".';
+    if (/confirm you.?re not a bot|Sign in to confirm/i.test(line)) return 'YouTube pidió verificar que no es un robot. ' + cookies;
+    if (/login required|logged-in|rate-limit|requested content is not available|empty media response/i.test(line)) return 'Instagram/Facebook exige iniciar sesión para descargar. ' + cookies;
+    if (/Private video|private/i.test(line)) return 'El video es privado.';
+    if (/not available in your country|geo/i.test(line)) return 'El video no está disponible en su país.';
+    if (/Video unavailable|has been removed|does not exist/i.test(line)) return 'El video no existe o fue eliminado.';
+    if (/Unsupported URL/i.test(line)) return 'Ese enlace no es compatible con la descarga.';
+    return line.slice(0, 300);
+  }
 
   app.post('/api/media/:id/optimize', requireAdmin, (req, res) => {
     const m = db.find('media', req.params.id);
@@ -1227,7 +1337,12 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
           };
           if (m.file) Object.assign(item, { file: m.file, url: `/media/${m.file}`, size: m.size, md5: m.md5, mime: m.mime });
           if (m.type === 'video' && m.naturalDuration) item.naturalDuration = m.naturalDuration;
+          if (m.type === 'video' && !m.file) return null; // aún descargándose
           if (m.type === 'web') item.url = m.url;
+          if (m.type === 'stream') {
+            item.url = PCStream.wrapperPath(m.stream);
+            item.stream = m.stream;
+          }
           if (m.type === 'text') item.text = m.text;
           if (m.type === 'html') {
             item.url = htmlUrl(m, m.entry);
@@ -1360,6 +1475,11 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
   );
   app.use('/media', express.static(mediaDir, { maxAge: '30d', immutable: true, fallthrough: false }));
   app.use('/admin', express.static(path.join(PUBLIC_DIR, 'admin')));
+  // El reproductor de YouTube necesita recibir el origen de la página que lo incrusta
+  app.use('/player/embed.html', (req, res, next) => {
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
   app.use('/player', express.static(path.join(PUBLIC_DIR, 'player')));
   app.use('/shared', express.static(path.join(PUBLIC_DIR, 'shared')));
   app.get('/download/publicast-player.apk', (req, res) => {

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- YouTube exige saber desde qué sitio se incrusta el video -->
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>PubliCast · video en línea</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    #v, iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+    #msg { position: absolute; inset: 0; display: grid; place-items: center; color: #94a3b8; font: 600 3vmin system-ui, sans-serif; text-align: center; padding: 4vmin; }
+    /* Capa transparente: evita que un toque abra YouTube o pause el video */
+    #shield { position: absolute; inset: 0; z-index: 5; }
+  </style>
+</head>
+<body>
+  <div id="msg">Cargando video…</div>
+  <div id="v"></div>
+  <div id="shield"></div>
+  <script src="/shared/stream.js"></script>
+  <script src="embed.js"></script>
+</body>
+</html>

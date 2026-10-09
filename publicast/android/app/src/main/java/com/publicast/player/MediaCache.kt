@@ -28,7 +28,7 @@ class MediaCache(context: Context) {
 
     fun isPlayable(item: Item): Boolean = when (item.type) {
         "image", "video", "html" -> item.file != null && fileFor(item.file).exists()
-        "web" -> !item.url.isNullOrEmpty()
+        "web", "stream" -> !item.url.isNullOrEmpty()
         "text" -> item.text != null
         else -> false
     }

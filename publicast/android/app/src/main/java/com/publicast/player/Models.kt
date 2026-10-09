@@ -31,6 +31,8 @@ data class Item(
     val playlistName: String = "",
     /** Transición de entrada propia ("" = la de la lista). */
     val transition: String = "",
+    /** Video en línea: youtube | tiktok | vimeo | facebook | instagram */
+    val streamProvider: String = "",
 )
 
 /** Cintillo: tamaño en % del alto de la pantalla, opacidad del fondo 0-100. */
@@ -216,6 +218,7 @@ data class Manifest(
                         playlistId = id,
                         playlistName = name,
                         transition = it.optString("transition"),
+                        streamProvider = it.optJSONObject("stream")?.optString("provider") ?: "",
                     )
                 )
             }

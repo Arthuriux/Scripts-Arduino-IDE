@@ -360,7 +360,7 @@ class MainActivity : Activity(), SyncManager.Listener {
         }
 
         fun player(container: FrameLayout, items: List<Item>, p: Playlist) {
-            val rp = RegionPlayer(this, container, items, p, cache, decoder, syncMode, lite, screenMin, { serverNow() }) { item, started, secs ->
+            val rp = RegionPlayer(this, prefs.serverUrl, container, items, p, cache, decoder, syncMode, lite, screenMin, { serverNow() }) { item, started, secs ->
                 sync?.recordPlay(item, started, secs)
             }
             regions.add(rp)
