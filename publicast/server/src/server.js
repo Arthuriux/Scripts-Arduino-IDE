@@ -785,10 +785,26 @@ if (require.main === module) {
   const { app, db, attachWebSocket } = createApp();
   const server = http.createServer(app);
   attachWebSocket(server);
-  server.listen(PORT, () => {
-    console.log(`\n  PubliCast CMS escuchando en http://localhost:${PORT}`);
+  const HOST = process.env.HOST || '0.0.0.0'; // todas las interfaces de red
+  server.listen(PORT, HOST, () => {
+    // Direcciones IPv4 de la red local: son las que hay que escribir en los dispositivos
+    const lan = Object.entries(require('os').networkInterfaces())
+      .flatMap(([name, list]) => (list || []).map((i) => ({ name, ...i })))
+      .filter((i) => (i.family === 'IPv4' || i.family === 4) && !i.internal);
+    console.log(`\n  PubliCast CMS escuchando en el puerto ${PORT}`);
     console.log(`  Panel de administración:  http://localhost:${PORT}/admin/`);
-    console.log(`  Reproductor web:          http://localhost:${PORT}/player/\n`);
+    if (lan.length) {
+      console.log('\n  Dirección para la app Android / otros equipos de la red:');
+      lan.forEach((i) => console.log(`    http://${i.address}:${PORT}    (${i.name})`));
+    } else {
+      console.log('\n  No se detectó ninguna red local: conecte el equipo a la red.');
+    }
+    console.log('');
+  });
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') console.error(`\n  El puerto ${PORT} ya está en uso. Cierre el otro programa o use otro puerto (set PORT=8081).\n`);
+    else console.error(e);
+    process.exit(1);
   });
   const shutdown = () => {
     db.flushSync();

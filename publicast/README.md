@@ -52,7 +52,8 @@ npm install
 ADMIN_PASSWORD=MiClaveSegura npm start
 ```
 
-En Windows (PowerShell): `$env:ADMIN_PASSWORD="MiClaveSegura"; npm start`
+En Windows (CMD): `set ADMIN_PASSWORD=MiClaveSegura` y luego `npm start`.
+En PowerShell: `$env:ADMIN_PASSWORD="MiClaveSegura"; npm start`
 
 ### Opción B — Docker
 
@@ -96,6 +97,15 @@ También se inicia automáticamente al arrancar el dispositivo.
 **Menú oculto del reproductor:** toque 5 veces seguidas la esquina superior izquierda, o pulse
 *Menú* / mantenga pulsado *OK* en el mando. Desde ahí puede cambiar de servidor, forzar la
 sincronización, volver a emparejar, ver información o salir.
+
+### Si la app no conecta
+
+1. Al arrancar, el servidor muestra la dirección exacta a usar (`http://192.168.x.x:8080`). No use `localhost` en el Android.
+2. Abra esa dirección + `/api/health` en el navegador del dispositivo: debe mostrar `{"ok":true,...}`.
+3. Si no carga, abra el puerto en el Firewall de Windows (CMD como administrador):
+   `netsh advfirewall firewall add rule name="PubliCast 8080" dir=in action=allow protocol=TCP localport=8080`
+   y compruebe que la red Wi-Fi esté marcada como *Privada*.
+4. El dispositivo y el servidor deben estar en la misma red (sin "aislamiento de clientes" en el router / Wi-Fi de invitados).
 
 ### Compilar el APK usted mismo
 
