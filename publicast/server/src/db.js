@@ -15,6 +15,7 @@ const EMPTY = () => ({
   playlists: [],
   layouts: [],
   walls: [],
+  groups: [],
   displays: [],
   schedules: [],
   stats: [],

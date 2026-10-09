@@ -248,6 +248,80 @@ test('optimiza videos con ffmpeg y ajusta el rendimiento de la pantalla', async 
   assert.equal((await fetch(base + m.url)).status, 200);
 });
 
+test('sucursales, repetición personalizada, HTML local, capturas y consumo', async () => {
+  // Sucursales
+  const g = await call('POST', '/api/groups', { name: 'Sucursal Centro', color: '#16a34a' });
+  assert.equal(g.status, 200);
+  const d = (await call('GET', '/api/displays')).body[0];
+  assert.equal((await call('POST', `/api/groups/${g.body.id}/displays`, { displayIds: [d.id] })).status, 200);
+  assert.equal((await call('GET', '/api/displays')).body[0].group, 'Sucursal Centro');
+  const ev = await call('POST', '/api/schedules', {
+    name: 'Campaña', content: 'p:' + playlistId, groupIds: [g.body.id], repeat: 'custom', startAt: '2026-01-01T08:00', endAt: '2030-01-01T20:00',
+  });
+  assert.equal(ev.status, 200);
+  assert.equal(ev.body.repeat, 'custom');
+  assert.equal((await call('POST', '/api/schedules', { content: 'p:' + playlistId, repeat: 'custom', startAt: '2026-01-02T08:00', endAt: '2026-01-01T08:00' })).status, 400);
+  const man = await player('GET', '/api/player/manifest');
+  assert.ok(man.body.schedules.some((s) => s.name === 'Campaña'));
+
+  // HTML subido con su carpeta de recursos
+  const fd = new FormData();
+  fd.append('files', new Blob(['<html><body><img src="img/logo.png">Hola</body></html>'], { type: 'text/html' }), 'Promo/index.html');
+  fd.append('files', new Blob([Buffer.from('png')], { type: 'image/png' }), 'Promo/img/logo.png');
+  fd.append('files', new Blob(['malo'], { type: 'application/x-msdownload' }), 'Promo/virus.exe');
+  const up = await fetch(base + '/api/media/html', { method: 'POST', body: fd, headers: { cookie } });
+  const html = await up.json();
+  assert.equal(up.status, 200, html.error);
+  assert.equal(html.type, 'html');
+  assert.equal(html.entry, 'index.html');
+  assert.deepEqual(html.files.map((f) => f.path).sort(), ['img/logo.png', 'index.html']);
+  const served = await fetch(`${base}/media/html/${html.dir}/index.html`);
+  assert.equal(served.status, 200);
+  assert.match(served.headers.get('content-security-policy'), /sandbox/);
+  assert.equal((await fetch(`${base}/media/html/${html.dir}/../../db.json`)).status, 404);
+
+  // Importación desde una ruta del servidor (file:///…)
+  const local = path.join(dataDir, 'local-site');
+  fs.mkdirSync(path.join(local, 'css'), { recursive: true });
+  fs.writeFileSync(path.join(local, 'SR-Digital.html'), '<link href="css/s.css" rel="stylesheet"><img src="falta.png"><script src="https://cdn.x/y.js"></script>');
+  fs.writeFileSync(path.join(local, 'css', 's.css'), 'body{background:url("../fondo.jpg")}');
+  fs.writeFileSync(path.join(local, 'fondo.jpg'), 'jpg');
+  const imp = await call('POST', '/api/media/html-path', { path: require('url').pathToFileURL(path.join(local, 'SR-Digital.html')).href });
+  assert.equal(imp.status, 200, imp.body.error);
+  assert.deepEqual(imp.body.files.map((f) => f.path).sort(), ['SR-Digital.html', 'css/s.css', 'fondo.jpg']);
+  assert.deepEqual(imp.body.missing, ['falta.png']);
+  assert.equal((await call('POST', '/api/media/html-path', { path: '/etc/passwd' })).status, 400);
+
+  // Al usarlo en una lista, el manifiesto incluye todos sus archivos
+  const pl = await call('POST', '/api/playlists', { name: 'Web', transition: 'zoom', transitionDuration: 1200, items: [{ mediaId: imp.body.id, transition: 'slide-up' }] });
+  assert.equal(pl.body.transition, 'zoom');
+  assert.equal(pl.body.items[0].transition, 'slide-up');
+  await call('PUT', '/api/displays/' + d.id, { defaultContent: 'p:' + pl.body.id });
+  await call('DELETE', '/api/walls/' + (await call('GET', '/api/walls')).body[0]?.id);
+  const man2 = await player('GET', '/api/player/manifest');
+  const item = man2.body.playlists[pl.body.id].items[0];
+  assert.equal(item.type, 'html');
+  assert.equal(item.transition, 'slide-up');
+  assert.equal(man2.body.playlists[pl.body.id].transitionDuration, 1200);
+  assert.ok(man2.body.files.some((f) => f.file === `html/${imp.body.dir}/css/s.css`));
+
+  // Capturas y consumo del servidor
+  const jpg = Buffer.alloc(500, 1);
+  const shot = await fetch(base + '/api/player/screenshot', { method: 'POST', body: jpg, headers: { 'Content-Type': 'image/jpeg', Authorization: 'Bearer ' + KEY } });
+  assert.equal(shot.status, 200);
+  const got = await fetch(`${base}/api/displays/${d.id}/screenshot`, { headers: { cookie } });
+  assert.equal(got.status, 200);
+  assert.equal((await got.arrayBuffer()).byteLength, 500);
+  const stats = await call('GET', '/api/system/stats');
+  assert.ok(stats.body.mem.total > 0);
+  assert.ok(stats.body.cpu.cores > 0);
+
+  // Borrar el HTML elimina su carpeta
+  await call('DELETE', '/api/media/' + html.id);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.ok(!fs.existsSync(path.join(dataDir, 'media', 'html', html.dir)));
+});
+
 test('al eliminar contenido se quita de las listas', async () => {
   assert.equal((await call('DELETE', '/api/media/' + imageId)).status, 200);
   const pls = await call('GET', '/api/playlists');

@@ -6,6 +6,7 @@
   <title>PubliCast CMS</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='22' rx='3' fill='%232563eb'/%3E%3Crect x='12' y='24' width='8' height='6' fill='%231e3a8a'/%3E%3Cpath d='M13 7l8 4-8 4z' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
+  <script>try { const t = localStorage.getItem('publicast.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>
 </head>
 <body>
   <div id="login" class="login hidden">
@@ -25,6 +26,7 @@
       <nav id="nav">
         <a href="#/panel" data-page="panel">📊 Panel</a>
         <a href="#/pantallas" data-page="pantallas">🖥️ Pantallas</a>
+        <a href="#/sucursales" data-page="sucursales">🏢 Sucursales</a>
         <a href="#/biblioteca" data-page="biblioteca">🖼️ Biblioteca</a>
         <a href="#/listas" data-page="listas">🎞️ Listas de reproducción</a>
         <a href="#/layouts" data-page="layouts">🧩 Layouts</a>
@@ -32,9 +34,13 @@
         <a href="#/videowall" data-page="videowall">🧱 Videowall</a>
         <a href="#/anuncio" data-page="anuncio">📢 Anuncio inmediato</a>
         <a href="#/estadisticas" data-page="estadisticas">📈 Estadísticas</a>
+        <a href="#/servidor" data-page="servidor">📟 Servidor</a>
         <a href="#/ajustes" data-page="ajustes">⚙️ Ajustes</a>
         <a href="#/ayuda" data-page="ayuda">❓ Cómo usar</a>
       </nav>
+      <div class="theme-switch" id="theme-switch" title="Apariencia del panel">
+        <button data-theme-opt="auto">🖥️ Auto</button><button data-theme-opt="light">☀️ Claro</button><button data-theme-opt="dark">🌙 Oscuro</button>
+      </div>
       <div class="sidebar-foot">
         <span id="whoami" class="muted"></span>
         <button id="logout" class="btn ghost small">Salir</button>
@@ -50,6 +56,8 @@
   <script src="app.js"></script>
   <script src="layouts.js"></script>
   <script src="walls.js"></script>
+  <script src="groups.js"></script>
+  <script src="system.js"></script>
   <script src="help.js"></script>
 </body>
 </html>

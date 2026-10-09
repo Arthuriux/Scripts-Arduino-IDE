@@ -20,7 +20,7 @@ data class Item(
     val id: String,
     val mediaId: String,
     val name: String,
-    val type: String, // image | video | web | text
+    val type: String, // image | video | web | text | html
     val duration: Int,
     val naturalDuration: Int,
     val file: String?,
@@ -29,6 +29,8 @@ data class Item(
     val text: TextStyle?,
     val playlistId: String = "",
     val playlistName: String = "",
+    /** Transición de entrada propia ("" = la de la lista). */
+    val transition: String = "",
 )
 
 /** Cintillo: tamaño en % del alto de la pantalla, opacidad del fondo 0-100. */
@@ -61,6 +63,7 @@ data class Playlist(
     val id: String,
     val name: String,
     val transition: String,
+    val transitionMs: Long,
     val fit: String,
     val background: Int,
     val ticker: TickerStyle,
@@ -88,6 +91,10 @@ data class WallInfo(val name: String, val rows: Int, val cols: Int, val row: Int
 data class Schedule(
     val id: String,
     val content: String, // 'p:<id>' lista · 'l:<id>' layout
+    /** always | daily | weekly | custom ("" = versión anterior: días + horas + fechas) */
+    val repeat: String = "",
+    val startAt: String = "",
+    val endAt: String = "",
     val days: List<Int>,
     val startTime: String,
     val endTime: String,
@@ -136,6 +143,9 @@ data class Manifest(
                     Schedule(
                         id = s.optString("id"),
                         content = content,
+                        repeat = s.optString("repeat"),
+                        startAt = s.optString("startAt"),
+                        endAt = s.optString("endAt"),
                         days = days,
                         startTime = s.optString("startTime"),
                         endTime = s.optString("endTime"),
@@ -205,6 +215,7 @@ data class Manifest(
                         },
                         playlistId = id,
                         playlistName = name,
+                        transition = it.optString("transition"),
                     )
                 )
             }
@@ -212,6 +223,7 @@ data class Manifest(
                 id = id,
                 name = name,
                 transition = p.optString("transition", "fade"),
+                transitionMs = p.optLong("transitionDuration", 800L).coerceIn(100L, 5000L),
                 fit = p.optString("fit", "contain"),
                 background = color(p.optString("background"), Color.BLACK),
                 ticker = parseTicker(p.optJSONObject("ticker") ?: JSONObject()),

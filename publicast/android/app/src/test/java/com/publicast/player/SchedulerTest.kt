@@ -19,7 +19,16 @@ class SchedulerTest {
         startDate: String = "",
         endDate: String = "",
         priority: Int = 1,
-    ) = Schedule("id-$playlistId-$priority", if (playlistId.contains(':')) playlistId else "p:$playlistId", days, start, end, startDate, endDate, priority)
+    ) = Schedule(
+        id = "id-$playlistId-$priority",
+        content = if (playlistId.contains(':')) playlistId else "p:$playlistId",
+        days = days,
+        startTime = start,
+        endTime = end,
+        startDate = startDate,
+        endDate = endDate,
+        priority = priority,
+    )
 
     @Test
     fun franjaDiurna() {
@@ -54,6 +63,17 @@ class SchedulerTest {
         assertEquals(listOf("p:D"), Scheduler.resolve(emptyList(), "D", at(2026, 10, 5, 9)))
         assertEquals(listOf("l:L"), Scheduler.resolve(listOf(sch("l:L")), "p:D", at(2026, 10, 5, 9)))
         assertEquals(emptyList<String>(), Scheduler.resolve(emptyList(), null, at(2026, 10, 5, 9)))
+    }
+
+    @Test
+    fun modosDeRepeticion() {
+        val now = at(2026, 10, 5, 9)
+        assertTrue(Scheduler.isActive(sch().copy(repeat = "always"), now))
+        assertTrue(Scheduler.isActive(sch().copy(repeat = "custom", startAt = "2026-10-05T08:30", endAt = "2026-10-05T09:30"), now))
+        assertFalse(Scheduler.isActive(sch().copy(repeat = "custom", startAt = "2026-10-05T09:01", endAt = "2026-10-06T00:00"), now))
+        // "daily" ignora los días marcados; "weekly" los respeta
+        assertTrue(Scheduler.isActive(sch(days = listOf(2), start = "08:00", end = "10:00").copy(repeat = "daily"), now))
+        assertFalse(Scheduler.isActive(sch(days = listOf(2), start = "08:00", end = "10:00").copy(repeat = "weekly"), now))
     }
 
     @Test

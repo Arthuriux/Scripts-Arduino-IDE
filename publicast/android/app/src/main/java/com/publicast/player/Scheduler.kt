@@ -27,7 +27,20 @@ object Scheduler {
         return true
     }
 
-    fun isActive(s: Schedule, now: Calendar): Boolean {
+    /** 'YYYY-MM-DDTHH:MM' en hora local (igual que en el panel). */
+    fun localStamp(c: Calendar): String =
+        ymd(c) + String.format(Locale.US, "T%02d:%02d", c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE))
+
+    fun isActive(schedule: Schedule, now: Calendar): Boolean {
+        var s = schedule
+        when (s.repeat) {
+            "always" -> return true
+            "custom" -> {
+                val t = localStamp(now)
+                return (s.startAt.isEmpty() || t >= s.startAt) && (s.endAt.isEmpty() || t < s.endAt)
+            }
+            "daily" -> s = s.copy(days = emptyList())
+        }
         val t = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
         val start = toMinutes(s.startTime, 0)
         val end = toMinutes(s.endTime, 24 * 60)

@@ -323,6 +323,16 @@
   }
 
   // ------------------------------------------------------------ reproductor de una zona
+  /** Estado inicial del contenido que entra y final del que sale (null = corte). */
+  const FRAMES = {
+    fade: { in: 'none', fade: true },
+    slide: { in: 'translateX(100%)', out: 'translateX(-100%)' },
+    'slide-right': { in: 'translateX(-100%)', out: 'translateX(100%)' },
+    'slide-up': { in: 'translateY(100%)', out: 'translateY(-100%)' },
+    'slide-down': { in: 'translateY(-100%)', out: 'translateY(100%)' },
+    zoom: { in: 'scale(1.18)', fade: true },
+    none: null,
+  };
   const durationOf = (item) => (item.duration > 0 ? item.duration : item.type === 'video' ? item.naturalDuration || 30 : 10);
 
   class RegionPlayer {
@@ -330,6 +340,7 @@
       this.el = el;
       this.items = items;
       this.transition = playlist.transition || 'fade';
+      this.transitionMs = playlist.transitionDuration || 800;
       this.fit = playlist.fit || 'contain';
       this.sync = sync;
       this.index = 0;
@@ -398,7 +409,7 @@
     render(item, offset, remaining) {
       const incoming = this.layers[1 - this.active];
       const outgoing = this.layers[this.active];
-      const transition = this.sync ? 'none' : this.transition;
+      const transition = this.sync ? 'none' : item.transition || this.transition;
       const waitMs = (remaining || durationOf(item)) * 1000;
       let el;
       let done = false;
@@ -433,9 +444,9 @@
           this.timer = setTimeout(advance, item.duration > 0 ? item.duration * 1000 : 3 * 3600 * 1000);
         }
         el.play().catch(() => {});
-      } else if (item.type === 'web') {
+      } else if (item.type === 'web' || item.type === 'html') {
         el = document.createElement('iframe');
-        el.src = item.url;
+        el.src = item.type === 'html' ? BASE + item.url : item.url;
         el.setAttribute('allow', 'autoplay; fullscreen');
         el.setAttribute('referrerpolicy', 'no-referrer');
         this.timer = setTimeout(advance, waitMs);
@@ -461,28 +472,49 @@
       }
 
       incoming.replaceChildren(el);
-      incoming.className = 'layer ' + (transition === 'slide' ? 'slide enter' : transition === 'fade' ? 'fade' : '');
-      outgoing.className = 'layer ' + (transition === 'slide' ? 'slide active' : transition === 'fade' ? 'fade active' : 'active');
+      this.animate(incoming, outgoing, transition);
+      this.active = 1 - this.active;
+      this.current = item;
+      this.beginStat(item);
+    }
+
+    /** Transición entre capas: fundido, deslizar en 4 direcciones, zoom o corte. */
+    animate(incoming, outgoing, type) {
+      const f = FRAMES[type] === undefined ? FRAMES.fade : FRAMES[type];
+      const ms = this.transitionMs;
+      [incoming, outgoing].forEach((l) => (l.style.transition = 'none'));
+      incoming.className = 'layer';
+      outgoing.className = 'layer active';
+      incoming.style.zIndex = 2;
+      outgoing.style.zIndex = 1;
+      incoming.style.opacity = f && f.fade ? 0 : 1;
+      incoming.style.transform = f ? f.in : 'none';
+      outgoing.style.opacity = 1;
+      outgoing.style.transform = 'none';
       void incoming.offsetWidth; // fuerza el reflow para que se aplique la transición
       requestAnimationFrame(() => {
-        incoming.classList.remove('enter');
+        if (f) {
+          const tr = `transform ${ms}ms ease, opacity ${ms}ms ease`;
+          incoming.style.transition = tr;
+          if (f.out) outgoing.style.transition = tr;
+        }
         incoming.classList.add('active');
+        incoming.style.opacity = 1;
+        incoming.style.transform = 'none';
+        if (f && f.out) outgoing.style.transform = f.out;
         outgoing.classList.remove('active');
-        if (transition === 'slide') outgoing.classList.add('leave');
         setTimeout(
           () => {
             if (!outgoing.classList.contains('active')) {
               outgoing.querySelector('video')?.pause();
               outgoing.replaceChildren();
-              outgoing.className = 'layer';
+              outgoing.style.opacity = 0;
+              outgoing.style.transform = 'none';
             }
           },
-          transition === 'none' ? 50 : 900
+          f ? ms + 100 : 50
         );
       });
-      this.active = 1 - this.active;
-      this.current = item;
-      this.beginStat(item);
     }
 
     beginStat(item) {

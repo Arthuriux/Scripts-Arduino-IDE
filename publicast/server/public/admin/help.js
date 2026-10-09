@@ -32,7 +32,8 @@ pages.ayuda = async (main) => {
           'Cada pantalla recibe un número (#1, #2, #3…). Puede cambiarlo en "Editar".'
         ),
         h('p', null, h('b', null, 'Identificar: '), 'igual que en la configuración de pantallas de Windows, el botón "Identificar" (o "🔢 Identificar todas") muestra en cada televisor su número en grande durante 15 segundos. Así sabe cuál es cuál.'),
-        h('p', null, 'En "Editar" también puede indicar la ubicación, la orientación (horizontal/vertical) y el contenido por defecto. "Recargar" reinicia la reproducción.'),
+        h('p', null, 'En "Editar" también puede indicar la sucursal, la ubicación, la orientación (horizontal/vertical), el rendimiento y el contenido por defecto. "Recargar" reinicia la reproducción.'),
+        h('p', null, h('b', null, 'Miniatura y vista previa: '), 'la columna "Vista" muestra una captura real de cada pantalla (la app la envía cada 5 minutos). Pulse la miniatura o "👁 Vista previa" para ver la captura, pedir una nueva con "📸 Capturar ahora" y ver a su lado una simulación en vivo del contenido.'),
         tip('Si la app no conecta: use la IP local (no "localhost"), compruebe que el Firewall de Windows permite el puerto 8080 y que ambos equipos están en la misma red.'),
       ],
     },
@@ -42,7 +43,7 @@ pages.ayuda = async (main) => {
       title: 'Biblioteca de contenidos',
       body: [
         h('p', null, 'Arrastre archivos a la zona de subida o haga clic para elegirlos. Formatos: JPG, PNG, GIF animado, WebP, MP4, WebM, MKV y MOV.'),
-        h('ul', null, h('li', null, h('b', null, '🌐 Página web: '), 'muestra una URL a pantalla completa (menús digitales, tableros, redes sociales).'), h('li', null, h('b', null, '🔤 Mensaje de texto: '), 'título y texto con los colores que elija, sin necesidad de diseñar una imagen.')),
+        h('ul', null, h('li', null, h('b', null, '📄 HTML local: '), 'suba un archivo .html, una carpeta completa (con sus imágenes, CSS y JS) o pegue una ruta como file:///C:/Users/…/pagina.html si el archivo está en el equipo del servidor. Se copia al servidor y las pantallas lo guardan para mostrarlo sin Internet.'), h('li', null, h('b', null, '🌐 Página web: '), 'muestra una URL a pantalla completa (menús digitales, tableros, redes sociales).'), h('li', null, h('b', null, '🔤 Mensaje de texto: '), 'título y texto con los colores que elija, sin necesidad de diseñar una imagen.')),
         h('p', null, 'La "duración" es el tiempo que se muestra cada imagen. En videos, 0 = se reproduce completo.'),
         tip('Resolución recomendada: 1920 × 1080 (horizontal) o 1080 × 1920 (vertical). Videos en MP4 (H.264).'),
       ],
@@ -52,7 +53,7 @@ pages.ayuda = async (main) => {
       icon: '🎞️',
       title: 'Listas de reproducción',
       body: [
-        steps('Pulse "+ Nueva lista" y escriba un nombre.', 'Pulse "+ Añadir contenidos" y marque los que quiera.', 'Ordénelos arrastrando (⋮⋮) o con las flechas, y ajuste los segundos de cada uno.', 'Elija la transición (fundido, deslizar) y cómo se ajustan las imágenes.', 'Guarde. Con "▶ Vista previa" verá cómo queda.'),
+        steps('Pulse "+ Nueva lista" y escriba un nombre.', 'Pulse "+ Añadir contenidos" y marque los que quiera.', 'Ordénelos arrastrando (⋮⋮) o con las flechas, y ajuste los segundos de cada uno.', 'En "✨ Transiciones" elija el efecto (fundido, deslizar en 4 direcciones, zoom o corte) y su duración; pulse "▶ Probar transición" para verlo.', 'Si quiere, cambie la transición de un contenido concreto en su fila ("Transición de entrada").', 'Guarde. Con "▶ Vista previa" verá cómo queda.'),
       ],
     },
     {
@@ -87,9 +88,23 @@ pages.ayuda = async (main) => {
       title: 'Programación por horarios',
       body: [
         h('p', null, 'Sirve para que cada contenido salga sólo cuando corresponde (desayunos por la mañana, promociones el fin de semana, campañas con fecha de inicio y fin).'),
-        steps('Pulse "+ Nuevo evento" y elija la lista o el layout (verá su miniatura).', 'Marque los días, la hora de inicio y de fin, y opcionalmente el rango de fechas.', 'Elija las pantallas o videowalls (ninguna = todas) y la prioridad.'),
+        steps(
+          'Pulse "+ Nuevo evento" y elija la lista o el layout (verá su miniatura).',
+          h('span', null, 'Elija la repetición: ', h('b', null, '🔁 Siempre'), ' (en bucle, 24 h), ', h('b', null, '📅 Todos los días'), ' (en una franja horaria), ', h('b', null, '🗓️ Por semana'), ' (días marcados) o ', h('b', null, '⏱️ Fechas y horas personalizadas'), ' (de un día y hora exactos a otro).'),
+          'Elija dónde se muestra: sucursales, pantallas o videowalls (nada marcado = todas), y la prioridad.'
+        ),
         h('p', null, 'La tabla muestra la miniatura, la fecha y el horario de cada evento; abajo, la ', h('b', null, 'vista semanal'), ' dibuja los eventos en el calendario con una línea roja en la hora actual.'),
         tip('Si dos eventos coinciden gana el de mayor prioridad. Con la misma prioridad, sus listas se intercalan. Fuera de cualquier evento, la pantalla muestra su contenido por defecto.'),
+      ],
+    },
+    {
+      id: 'sucursales',
+      icon: '🏢',
+      title: 'Sucursales (grupos de pantallas)',
+      body: [
+        h('p', null, 'Agrupe las pantallas por local, ciudad o zona. Luego puede programar contenido o enviar un anuncio inmediato a toda una sucursal de una vez.'),
+        steps(['Vaya a ', link('#/sucursales', 'Sucursales'), ' → "+ Nueva sucursal", escriba el nombre y marque sus pantallas.'], 'En Programación y en Anuncio inmediato marque la sucursal en lugar de cada pantalla.', 'En Pantallas puede filtrar la lista por sucursal.'),
+        tip('Si agrega una pantalla nueva a la sucursal, recibe automáticamente toda la programación de esa sucursal.'),
       ],
     },
     {
@@ -119,6 +134,15 @@ pages.ayuda = async (main) => {
       icon: '📈',
       title: 'Estadísticas (prueba de reproducción)',
       body: [h('p', null, 'En ', link('#/estadisticas', 'Estadísticas'), ' verá cuántas veces y cuánto tiempo se mostró cada contenido en cada pantalla. Descargue el CSV para entregarlo a sus anunciantes.')],
+    },
+    {
+      id: 'servidor',
+      icon: '📟',
+      title: 'Consumo del servidor y apariencia',
+      body: [
+        h('p', null, 'En ', link('#/servidor', 'Servidor'), ' verá en tiempo real el uso de procesador, memoria y disco del equipo donde está instalado PubliCast, la memoria que usa el propio servidor, las pantallas conectadas y las direcciones que deben usar los dispositivos.'),
+        h('p', null, 'Abajo a la izquierda puede elegir la apariencia del panel: ', h('b', null, '🖥️ Auto'), ' (según Windows), ', h('b', null, '☀️ Claro'), ' u ', h('b', null, '🌙 Oscuro'), '.'),
+      ],
     },
     {
       id: 'rendimiento',

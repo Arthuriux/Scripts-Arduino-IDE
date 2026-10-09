@@ -80,6 +80,17 @@ class SyncManager(
         api.shutdown()
     }
 
+    fun uploadScreenshot(jpeg: ByteArray) {
+        if (!running || !authorized) return
+        io.execute {
+            try {
+                api.screenshot(jpeg)
+            } catch (e: Exception) {
+                Log.w(TAG, "No se pudo enviar la captura: ${e.message}")
+            }
+        }
+    }
+
     fun recordPlay(item: Item, startedAt: Long, seconds: Int) {
         if (seconds < 1) return
         synchronized(stats) {

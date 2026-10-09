@@ -58,8 +58,8 @@ class RegionPlayer(
     private val onPlayed: (item: Item, startedAt: Long, seconds: Int) -> Unit,
 ) {
     private val handler = Handler(Looper.getMainLooper())
-    private val transition = if (sync) "none" else playlist.transition
-    private val transitionMs = if (lite) 450L else TRANSITION_MS
+    private val transition = playlist.transition
+    private val transitionMs = if (lite) minOf(playlist.transitionMs, 450L) else playlist.transitionMs
     private val fit = playlist.fit
     private var player: ExoPlayer? = null
     private var videoView: PlayerView? = null
@@ -186,8 +186,10 @@ class RegionPlayer(
                 // Sin videowall: duración 0 = video completo (límite de seguridad de 3 h)
                 handler.postDelayed(advance, if (sync || item.duration > 0) waitMs else 3 * 3600 * 1000L)
             }
-            "web" -> {
-                val wv = createWebView(item.url ?: "")
+            "web", "html" -> {
+                // HTML local: se abre la copia descargada (funciona sin conexión, con sus imágenes y estilos)
+                val url = if (item.type == "html") Uri.fromFile(cache.fileFor(item.file ?: "")).toString() else item.url ?: ""
+                val wv = createWebView(url, item.type == "html")
                 if (wv == null) {
                     handler.postDelayed(advance, 1000)
                     return
@@ -260,26 +262,38 @@ class RegionPlayer(
         }
         currentView = view
         val width = container.width.toFloat()
-        // SurfaceView no admite transparencia: en modo ligero el video entra por corte
-        val effective = if (lite && view === videoView) "none" else transition
+        val height = container.height.toFloat()
+        // Videowall: corte para mantener la sincronía. SurfaceView (modo ligero) no admite transparencia.
+        val effective = when {
+            sync -> "none"
+            lite && view === videoView -> "none"
+            else -> item.transition.ifEmpty { transition }
+        }
+        // Estado de partida del contenido que entra y destino del que sale
+        view.alpha = 1f
+        view.translationX = 0f
+        view.translationY = 0f
+        view.scaleX = 1f
+        view.scaleY = 1f
+        var outX = 0f
+        var outY = 0f
         when (effective) {
-            "fade" -> {
-                view.translationX = 0f
-                view.alpha = 0f
-                // withLayer(): la GPU anima una textura en lugar de redibujar la vista en cada fotograma
-                view.animate().alpha(1f).setDuration(transitionMs).withLayer().withEndAction { cleanup() }.start()
-            }
-            "slide" -> {
-                view.alpha = 1f
-                view.translationX = width
-                view.animate().translationX(0f).setDuration(transitionMs).withLayer().withEndAction { cleanup() }.start()
-                old?.animate()?.translationX(-width)?.setDuration(transitionMs)?.withLayer()?.start()
-            }
+            "fade" -> view.alpha = 0f
+            "slide" -> { view.translationX = width; outX = -width }
+            "slide-right" -> { view.translationX = -width; outX = width }
+            "slide-up" -> { view.translationY = height; outY = -height }
+            "slide-down" -> { view.translationY = -height; outY = height }
+            "zoom" -> { view.alpha = 0f; view.scaleX = 1.18f; view.scaleY = 1.18f }
             else -> {
-                view.alpha = 1f
-                view.translationX = 0f
                 cleanup()
+                return
             }
+        }
+        // withLayer(): la GPU anima una textura en lugar de redibujar la vista en cada fotograma
+        view.animate().alpha(1f).translationX(0f).translationY(0f).scaleX(1f).scaleY(1f)
+            .setDuration(transitionMs).withLayer().withEndAction { cleanup() }.start()
+        if (old != null && (outX != 0f || outY != 0f)) {
+            old.animate().translationX(outX).translationY(outY).setDuration(transitionMs).withLayer().start()
         }
     }
 
@@ -303,6 +317,9 @@ class RegionPlayer(
             }
             v.alpha = 1f
             v.translationX = 0f
+            v.translationY = 0f
+            v.scaleX = 1f
+            v.scaleY = 1f
             if (!stopped) return
         }
         container.removeView(v)
@@ -354,8 +371,9 @@ class RegionPlayer(
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun createWebView(url: String): WebView? = try {
+    private fun createWebView(url: String, local: Boolean = false): WebView? = try {
         WebView(activity).apply {
+            settings.allowFileAccess = local
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
@@ -418,6 +436,5 @@ class RegionPlayer(
 
     companion object {
         private const val TAG = "PubliCast"
-        private const val TRANSITION_MS = 800L
     }
 }

@@ -120,8 +120,8 @@ const ago = (iso) => {
   return `hace ${Math.round(s / 86400)} d`;
 };
 const DAYS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
-const TYPE_LABEL = { image: 'Imagen', video: 'Video', web: 'Página web', text: 'Texto' };
-const TYPE_ICON = { image: '🖼️', video: '🎬', web: '🌐', text: '🔤' };
+const TYPE_LABEL = { image: 'Imagen', video: 'Video', web: 'Página web', text: 'Texto', html: 'HTML local' };
+const TYPE_ICON = { image: '🖼️', video: '🎬', web: '🌐', text: '🔤', html: '📄' };
 
 function field(label, input, hint) {
   return h('label', null, label, input, hint ? h('small', { class: 'muted' }, hint) : null);
@@ -137,8 +137,8 @@ function playlistOptions(playlists, selected, emptyLabel = '— Ninguna —') {
 
 /** Catálogo de contenidos que se pueden asignar: listas y layouts. */
 async function loadCatalog() {
-  const [playlists, layouts, media] = await Promise.all([api('GET', '/api/playlists'), api('GET', '/api/layouts'), api('GET', '/api/media')]);
-  return { playlists, layouts, media, byId: new Map(media.map((m) => [m.id, m])) };
+  const [playlists, layouts, media, groups] = await Promise.all([api('GET', '/api/playlists'), api('GET', '/api/layouts'), api('GET', '/api/media'), api('GET', '/api/groups')]);
+  return { playlists, layouts, media, groups, byId: new Map(media.map((m) => [m.id, m])) };
 }
 
 /** <option> para elegir una lista ('p:id') o un layout ('l:id'). */
@@ -215,7 +215,25 @@ function thumbFor(m, cls = 'thumb') {
       h('div', null, h('b', { style: { color: m.text?.accent } }, m.text?.title || ''), h('div', null, (m.text?.body || '').slice(0, 80))),
       h('span', { class: 'type' }, 'Texto')
     );
+  if (m.type === 'html' && cls === 'thumb')
+    return h('div', { class: 'thumb html' }, h('iframe', { src: m.url, loading: 'lazy', tabindex: '-1', sandbox: 'allow-scripts', title: m.name }), h('span', { class: 'type' }, 'HTML'));
   return h('div', { class: cls }, TYPE_ICON[m.type] || '❔', cls === 'thumb' ? h('span', { class: 'type' }, TYPE_LABEL[m.type]) : null);
+}
+
+// ---------------------------------------------------------------- tema claro / oscuro
+function applyTheme(t) {
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+  try {
+    localStorage.setItem('publicast.theme', t);
+  } catch {}
+  document.querySelectorAll('[data-theme-opt]').forEach((b) => b.classList.toggle('on', b.dataset.themeOpt === t));
+}
+document.querySelectorAll('[data-theme-opt]').forEach((b) => b.addEventListener('click', () => applyTheme(b.dataset.themeOpt)));
+try {
+  applyTheme(localStorage.getItem('publicast.theme') || 'auto');
+} catch {
+  applyTheme('auto');
 }
 
 // ---------------------------------------------------------------- sesión / router
@@ -270,7 +288,7 @@ function pageHead(title, subtitle, ...actions) {
 // ---------------------------------------------------------------- Panel
 pages.panel = async (main) => {
   const render = async () => {
-    const d = await api('GET', '/api/dashboard');
+    const [d, cat] = await Promise.all([api('GET', '/api/dashboard'), loadCatalog()]);
     const c = d.counts;
     mount(main, 
       pageHead('Panel', 'Resumen de su red de pantallas', h('a', { class: 'btn', href: '#/anuncio' }, '📢 Anuncio inmediato'), h('a', { class: 'btn primary', href: '#/pantallas' }, '+ Agregar pantalla')),
@@ -287,7 +305,7 @@ pages.panel = async (main) => {
         kpi(c.plays24h, 'Reproducciones (24 h)'),
         kpi(fmtBytes(c.storage), 'Almacenamiento')
       ),
-      h('div', { class: 'card' }, h('h2', null, 'Estado de las pantallas'), displaysTable(d.displays, true)),
+      h('div', { class: 'card' }, h('h2', null, 'Estado de las pantallas'), displaysTable(d.displays, true, null, cat)),
       !c.displays
         ? h(
             'div',
@@ -317,7 +335,62 @@ function statusBadge(d) {
   return d.online ? h('span', null, h('span', { class: 'dot ok' }), 'En línea') : h('span', { class: 'muted' }, h('span', { class: 'dot' }), 'Desconectada');
 }
 
-function displaysTable(list, compact, onEdit) {
+/** Miniatura de una pantalla: su última captura real o, si no hay, el contenido que debería mostrar. */
+function displayThumb(d, cat) {
+  const box = h('div', { class: 'dthumb', title: 'Vista previa', onclick: () => cat && displayPreview(d, cat) });
+  if (d.hasScreenshot) box.append(h('img', { src: `/api/displays/${d.id}/screenshot?t=${encodeURIComponent(d.screenshotAt || '')}`, alt: '', loading: 'lazy' }));
+  else if (cat && d.nowKeys?.[0]) box.append(contentThumb(d.nowKeys[0], cat));
+  else box.append(h('span', null, '🖥️'));
+  if (d.hasScreenshot) box.append(h('span', { class: 'dthumb-tag' }, '📸 ' + ago(d.screenshotAt)));
+  return box;
+}
+
+/** Vista previa de una pantalla: captura real del dispositivo y simulación en vivo de su contenido. */
+function displayPreview(d, cat) {
+  const shot = h('div', { class: 'shot' });
+  const info = h('div', { class: 'muted' });
+  let last = d.screenshotAt;
+  const drawShot = (at) => {
+    mount(shot, at ? h('img', { src: `/api/displays/${d.id}/screenshot?t=${Date.now()}`, alt: 'Captura de la pantalla' }) : h('div', { class: 'empty' }, 'Todavía no hay captura. Pulse "Capturar ahora" (requiere la app Android 1.3 o superior).'));
+    info.textContent = at ? 'Captura ' + ago(at) + ' · ' + fmtDate(at) : '';
+  };
+  const capture = () =>
+    guard(async () => {
+      const r = await api('POST', `/api/displays/${d.id}/command`, { type: 'screenshot' });
+      if (!r.delivered) return toast('La pantalla no está conectada en este momento', true);
+      info.textContent = 'Solicitando captura…';
+      for (let i = 0; i < 15; i++) {
+        await new Promise((res) => setTimeout(res, 1000));
+        const fresh = (await api('GET', '/api/displays')).find((x) => x.id === d.id);
+        if (fresh?.screenshotAt && fresh.screenshotAt !== last) {
+          last = fresh.screenshotAt;
+          return drawShot(last);
+        }
+      }
+      info.textContent = 'La pantalla no envió la captura (actualice la app a la versión 1.3).';
+    });
+  const key = d.nowKeys?.[0];
+  const portrait = contentRecord(key, cat)?.orientation === 'portrait';
+  modal(
+    h(
+      'div',
+      null,
+      h('h2', null, `Vista previa: ${d.number ? '#' + d.number + ' ' : ''}${d.name}`),
+      h('div', { class: 'muted', style: { marginBottom: '12px' } }, d.nowPlaying?.length ? 'Reproduciendo: ' + d.nowPlaying.join(', ') : 'Sin contenido asignado'),
+      h(
+        'div',
+        { class: 'preview-pair' },
+        h('div', null, h('h3', null, '📸 Lo que muestra la pantalla (captura real)'), shot, h('div', { class: 'actions', style: { marginTop: '8px' } }, h('button', { class: 'btn small primary', onclick: capture }, '📸 Capturar ahora'), info)),
+        h('div', null, h('h3', null, '▶ Simulación en vivo del contenido'), key ? h('iframe', { class: 'preview-frame' + (portrait ? ' portrait' : ''), src: '/player/?preview=' + encodeURIComponent(key) }) : h('div', { class: 'empty' }, 'Sin contenido'))
+      ),
+      h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: closeModal }, 'Cerrar'))
+    ),
+    { wide: true }
+  );
+  drawShot(d.screenshotAt);
+}
+
+function displaysTable(list, compact, onEdit, cat) {
   if (!list.length) return h('div', { class: 'empty' }, 'Todavía no hay pantallas. Instale la app en un dispositivo Android para registrarlo.');
   return h(
     'div',
@@ -325,7 +398,7 @@ function displaysTable(list, compact, onEdit) {
     h(
       'table',
       null,
-      h('thead', null, h('tr', null, h('th', null, 'Pantalla'), h('th', null, 'Estado'), h('th', null, 'Reproduciendo ahora'), h('th', null, 'Última conexión'), compact ? null : h('th', null, 'Dispositivo'), compact ? null : h('th', null, ''))),
+      h('thead', null, h('tr', null, h('th', null, 'Vista'), h('th', null, 'Pantalla'), h('th', null, 'Estado'), h('th', null, 'Reproduciendo ahora'), h('th', null, 'Última conexión'), compact ? null : h('th', null, 'Dispositivo'), compact ? null : h('th', null, ''))),
       h(
         'tbody',
         null,
@@ -333,11 +406,13 @@ function displaysTable(list, compact, onEdit) {
           h(
             'tr',
             null,
+            h('td', { class: 'thumb-td' }, displayThumb(d, cat)),
             h(
               'td',
               null,
               h('div', { class: 'dname' }, d.number ? h('span', { class: 'dnum', title: 'Número de pantalla (Identificar)' }, d.number) : null, h('b', null, d.name)),
               d.location ? h('div', { class: 'muted' }, d.location) : null,
+              d.group ? h('div', { class: 'muted' }, '🏢 ' + d.group) : null,
               d.wall ? h('div', { class: 'muted' }, `🧱 ${d.wall.name} · fila ${d.wall.row + 1}, col. ${d.wall.col + 1}`) : null
             ),
             h('td', null, statusBadge(d)),
@@ -358,10 +433,23 @@ function displaysTable(list, compact, onEdit) {
 }
 
 // ---------------------------------------------------------------- Pantallas
+let groupFilter = '';
 pages.pantallas = async (main) => {
   const render = async () => {
-    const [displays, cat] = await Promise.all([api('GET', '/api/displays'), loadCatalog()]);
-    const pending = displays.filter((d) => !d.authorized);
+    const [all, cat] = await Promise.all([api('GET', '/api/displays'), loadCatalog()]);
+    const pending = all.filter((d) => !d.authorized);
+    const displays = all.filter((d) => groupFilter === '' || (groupFilter === '-' ? !d.groupId : d.groupId === groupFilter));
+    const filterSel = h(
+      'select',
+      { style: { width: 'auto' } },
+      h('option', { value: '' }, `Todas las sucursales (${all.length})`),
+      cat.groups.map((g) => h('option', { value: g.id, selected: groupFilter === g.id }, `🏢 ${g.name} (${all.filter((d) => d.groupId === g.id).length})`)),
+      h('option', { value: '-', selected: groupFilter === '-' }, `Sin sucursal (${all.filter((d) => !d.groupId).length})`)
+    );
+    filterSel.addEventListener('change', () => {
+      groupFilter = filterSel.value;
+      render();
+    });
     mount(main, 
       pageHead(
         'Pantallas',
@@ -392,11 +480,12 @@ pages.pantallas = async (main) => {
       h(
         'div',
         { class: 'card' },
-        h('h2', null, 'Todas las pantallas'),
+        h('div', { class: 'page-head' }, h('h2', { style: { margin: 0 } }, 'Pantallas'), filterSel),
         displaysTable(displays, false, (d) =>
           h(
             'div',
             { class: 'actions' },
+            d.authorized ? h('button', { class: 'btn small', onclick: () => displayPreview(d, cat) }, '👁 Vista previa') : null,
             d.authorized ? h('button', { class: 'btn small', onclick: () => editDisplay(d, cat, render) }, 'Editar') : null,
             d.authorized ? h('button', { class: 'btn small', title: 'Muestra el número y el nombre en la pantalla', onclick: () => command(d, { type: 'identify' }) }, 'Identificar') : null,
             d.authorized ? h('button', { class: 'btn small', onclick: () => command(d, { type: 'reload' }) }, 'Recargar') : null,
@@ -412,14 +501,15 @@ pages.pantallas = async (main) => {
               },
               'Eliminar'
             )
-          )
+          ),
+          cat
         )
       )
     );
   };
   await render();
   refreshTimer = setInterval(() => {
-    if ($('#modal').classList.contains('hidden') && !document.activeElement?.closest('form')) render().catch(() => {});
+    if ($('#modal').classList.contains('hidden') && !document.activeElement?.closest('form, select')) render().catch(() => {});
   }, 10000);
 };
 
@@ -435,7 +525,7 @@ function authorizeForm(cat, pending, after) {
     'form',
     { class: 'form' },
     field('Código mostrado en la pantalla', h('input', { name: 'code', class: 'code-input', inputmode: 'numeric', maxlength: 6, placeholder: '000000', required: true, autocomplete: 'off' })),
-    h('div', { class: 'row' }, field('Nombre', h('input', { name: 'name', placeholder: 'Ej. Vitrina entrada' })), field('Contenido por defecto', h('select', { name: 'defaultContent' }, contentOptions(cat)))),
+    h('div', { class: 'row' }, field('Nombre', h('input', { name: 'name', placeholder: 'Ej. Vitrina entrada' })), field('Contenido por defecto', h('select', { name: 'defaultContent' }, contentOptions(cat))), field('Sucursal', h('select', { name: 'groupId' }, h('option', { value: '' }, '— Sin sucursal —'), cat.groups.map((g) => h('option', { value: g.id, selected: g.id === groupFilter }, g.name))))),
     h('button', { class: 'btn primary', type: 'submit' }, 'Autorizar pantalla'),
     pending.length ? h('p', { class: 'muted' }, 'Pendientes ahora: ', pending.map((p) => `${p.code} (${p.name})`).join(', ')) : null
   );
@@ -463,6 +553,7 @@ function editDisplay(d, cat, after) {
     { class: 'form' },
     h('h2', null, 'Editar pantalla'),
     h('div', { class: 'row' }, field('Nombre', h('input', { name: 'name', value: d.name, required: true })), h('div', { class: 'shrink' }, field('Número', h('input', { name: 'number', type: 'number', min: 1, value: d.number || '', style: { width: '90px' } })))),
+    field('Sucursal', h('select', { name: 'groupId' }, h('option', { value: '' }, '— Sin sucursal —'), cat.groups.map((g) => h('option', { value: g.id, selected: g.id === d.groupId }, g.name))), h('a', { href: '#/sucursales', onclick: closeModal }, 'Administrar sucursales')),
     field('Ubicación', h('input', { name: 'location', value: d.location || '', placeholder: 'Ej. Sucursal centro, planta baja' })),
     field('Contenido por defecto', h('select', { name: 'defaultContent' }, contentOptions(cat, d.defaultContent)), d.wall ? 'Esta pantalla forma parte de un videowall: si el videowall tiene contenido, se usa ése.' : 'Se reproduce cuando no hay ningún evento programado activo.'),
     field(
@@ -577,6 +668,7 @@ pages.biblioteca = async (main) => {
       ['image', 'Imágenes'],
       ['video', 'Videos'],
       ['web', 'Web'],
+      ['html', 'HTML'],
       ['text', 'Texto'],
     ].map(([v, l]) =>
       h(
@@ -596,13 +688,83 @@ pages.biblioteca = async (main) => {
   );
 
   mount(main, 
-    pageHead('Biblioteca', 'Imágenes, videos, páginas web y mensajes de texto', h('button', { class: 'btn', onclick: () => widgetEditor('web', null, load) }, '🌐 Página web'), h('button', { class: 'btn', onclick: () => widgetEditor('text', null, load) }, '🔤 Mensaje de texto')),
+    pageHead(
+      'Biblioteca',
+      'Imágenes, videos, páginas web, HTML locales y mensajes de texto',
+      h('button', { class: 'btn', onclick: () => htmlDialog(load) }, '📄 HTML local'),
+      h('button', { class: 'btn', onclick: () => widgetEditor('web', null, load) }, '🌐 Página web'),
+      h('button', { class: 'btn', onclick: () => widgetEditor('text', null, load) }, '🔤 Mensaje de texto')
+    ),
     h('div', { class: 'card' }, drop, fileInput),
     h('div', { class: 'page-head' }, filters),
     grid
   );
   await load();
 };
+
+async function importHtmlPath(p, name, reload) {
+  await guard(async () => {
+    const r = await api('POST', '/api/media/html-path', { path: p, name });
+    toast(`HTML importado (${r.files.length} archivo/s)` + (r.missing?.length ? ` · no se encontraron: ${r.missing.join(', ')}` : ''), !!r.missing?.length);
+    reload();
+  });
+}
+
+/** Sube un HTML suelto, una carpeta completa (con imágenes, CSS y JS) o importa una ruta del servidor. */
+function htmlDialog(reload) {
+  const fileIn = h('input', { type: 'file', accept: '.html,.htm', multiple: true, class: 'hidden' });
+  const dirIn = h('input', { type: 'file', class: 'hidden', webkitdirectory: true, multiple: true });
+  const pathIn = h('input', { placeholder: 'file:///C:/Users/SOPORTE/Documents/Proyectos/Publicast/SR-Digital-Pro-Futurista.html' });
+  const nameIn = h('input', { placeholder: 'Nombre (opcional)' });
+  const status = h('div', { class: 'muted' });
+  const send = (files) => {
+    if (!files.length) return;
+    const fd = new FormData();
+    if (nameIn.value) fd.append('name', nameIn.value);
+    // El nombre incluye la ruta relativa dentro de la carpeta, para conservar img/, css/…
+    [...files].forEach((f) => fd.append('files', f, f.webkitRelativePath || f.name));
+    status.textContent = `Subiendo ${files.length} archivo(s)…`;
+    fetch('/api/media/html', { method: 'POST', body: fd })
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || 'Error al subir');
+        closeModal();
+        toast(`HTML "${data.name}" añadido (${data.files.length} archivo/s)`);
+        reload();
+      })
+      .catch((e) => {
+        status.textContent = '';
+        toast(e.message, true);
+      });
+  };
+  fileIn.addEventListener('change', () => send(fileIn.files));
+  dirIn.addEventListener('change', () => send(dirIn.files));
+  modal(
+    h(
+      'div',
+      { class: 'form' },
+      h('h2', null, '📄 Añadir HTML local'),
+      h('p', { class: 'muted' }, 'Páginas HTML diseñadas por usted (menús, carteles animados, tableros…). Se guardan en el servidor y las pantallas las descargan para mostrarlas aunque no haya Internet.'),
+      field('Nombre', nameIn),
+      h(
+        'div',
+        { class: 'grid cols-2' },
+        h('div', { class: 'card' }, h('h3', { style: { marginTop: 0 } }, 'Un archivo .html'), h('p', { class: 'muted' }, 'Si el HTML no usa imágenes ni archivos aparte.'), h('button', { class: 'btn primary', onclick: () => fileIn.click() }, '📄 Elegir archivo'), fileIn),
+        h('div', { class: 'card' }, h('h3', { style: { marginTop: 0 } }, 'Una carpeta completa'), h('p', { class: 'muted' }, 'Incluye las imágenes, CSS y JS de la carpeta. Se abre su index.html (o el primer .html).'), h('button', { class: 'btn primary', onclick: () => dirIn.click() }, '📁 Elegir carpeta'), dirIn)
+      ),
+      h(
+        'div',
+        { class: 'card' },
+        h('h3', { style: { marginTop: 0 } }, 'Ruta en el equipo del servidor'),
+        h('p', { class: 'muted' }, 'Pegue una ruta como file:///C:/Users/…/pagina.html o C:\\Users\\…\\pagina.html. Debe existir en el equipo donde corre el servidor; se copian también las imágenes, estilos y scripts que use de su carpeta.'),
+        h('div', { class: 'row' }, pathIn, h('button', { class: 'btn primary shrink', onclick: () => pathIn.value.trim() && (closeModal(), importHtmlPath(pathIn.value.trim(), nameIn.value, reload)) }, 'Importar'))
+      ),
+      status,
+      h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: closeModal }, 'Cerrar'))
+    ),
+    { wide: true }
+  );
+}
 
 function mediaCard(m, reload) {
   const thumb = thumbFor(m);
@@ -643,7 +805,7 @@ function mediaCard(m, reload) {
       h(
         'div',
         { class: 'actions' },
-        m.type === 'image' || m.type === 'video' ? h('a', { class: 'btn small', href: m.url, target: '_blank' }, 'Ver') : null,
+        m.type === 'image' || m.type === 'video' || m.type === 'html' ? h('a', { class: 'btn small', href: m.url, target: '_blank' }, 'Ver') : null,
         m.type === 'video' && !m.optimizing && !m.optimized
           ? h(
               'button',
@@ -707,7 +869,7 @@ function widgetEditor(type, m, reload) {
     h('h2', null, (m ? 'Editar ' : 'Nuevo ') + (type === 'web' ? 'contenido web' : 'mensaje de texto')),
     field('Nombre', h('input', { name: 'name', value: m?.name || '', placeholder: 'Nombre interno' })),
     type === 'web'
-      ? field('Dirección (URL)', h('input', { name: 'url', type: 'url', value: m?.url || '', placeholder: 'https://…', required: true }), 'Se muestra a pantalla completa. Algunas webs bloquean ser mostradas dentro de otras páginas en el reproductor web; en la app Android funcionan todas.')
+      ? field('Dirección (URL)', h('input', { name: 'url', type: 'text', value: m?.url || '', placeholder: 'https://…', required: true }), 'Se muestra a pantalla completa. Algunas webs bloquean ser mostradas dentro de otras páginas en el reproductor web; en la app Android funcionan todas.')
       : [
           field('Título', h('input', { name: 'title', value: t.title || '', placeholder: '¡Oferta del día!' })),
           field('Texto', h('textarea', { name: 'body', placeholder: '2x1 en todos los cafés de 8 a 10 h' }, t.body || '')),
@@ -735,6 +897,11 @@ function widgetEditor(type, m, reload) {
     e.preventDefault();
     const v = formData(form);
     const body = { type, name: v.name, duration: v.duration, url: v.url, text: { title: v.title, body: v.body, bg: v.bg, color: v.color, accent: v.accent, align: v.align } };
+    // Una ruta local (file:///C:/… o C:\…) se importa al servidor como contenido HTML
+    if (type === 'web' && !m && /^(file:|[a-z]:[\\/]|\/)/i.test(v.url || '')) {
+      closeModal();
+      return importHtmlPath(v.url, v.name, reload);
+    }
     guard(async () => {
       if (m) await api('PUT', '/api/media/' + m.id, body);
       else await api('POST', '/api/media/widget', body);
@@ -822,6 +989,7 @@ function playlistEditor(main, p, media, byId) {
   const state = {
     name: p?.name || '',
     transition: p?.transition || 'fade',
+    transitionDuration: p?.transitionDuration || 800,
     fit: p?.fit || 'contain',
     background: p?.background || '#000000',
     ticker: { ...TICKER_DEFAULTS, enabled: false, ...(p?.ticker || {}) },
@@ -851,7 +1019,7 @@ function playlistEditor(main, p, media, byId) {
           h('div', { class: 'handle', title: 'Arrastre para reordenar' }, '⋮⋮'),
           thumbFor(m, 'mini'),
           h('div', null, h('b', null, m.name), h('div', { class: 'muted' }, TYPE_LABEL[m.type] || '')),
-          h('label', null, m.type === 'video' ? 'Segundos (0 = completo)' : 'Segundos', dur),
+          h('div', { class: 'item-fields' }, h('label', null, m.type === 'video' ? 'Segundos (0 = completo)' : 'Segundos', dur), h('label', null, 'Transición de entrada', itemTransition(it))),
           h(
             'div',
             { class: 'actions' },
@@ -954,11 +1122,11 @@ function playlistEditor(main, p, media, byId) {
         'div',
         { class: 'row' },
         field('Nombre', bind(h('input', { value: state.name, placeholder: 'Ej. Promociones de octubre' }), (v) => (state.name = v))),
-        field('Transición', bind(h('select', null, [['fade', 'Fundido'], ['slide', 'Deslizar'], ['none', 'Ninguna']].map(([v, l]) => h('option', { value: v, selected: state.transition === v }, l))), (v) => (state.transition = v))),
         field('Ajuste de imagen/video', bind(h('select', null, [['contain', 'Ajustar (sin recortar)'], ['cover', 'Rellenar (recortar)'], ['fill', 'Estirar']].map(([v, l]) => h('option', { value: v, selected: state.fit === v }, l))), (v) => (state.fit = v))),
         h('div', { class: 'shrink' }, field('Fondo', bind(h('input', { type: 'color', value: state.background }), (v) => (state.background = v))))
       )
     ),
+    h('div', { class: 'card form' }, h('h2', null, '✨ Transiciones'), transitionEditor(state)),
     h('div', { class: 'card' }, h('div', { class: 'page-head' }, h('div', null, h('h2', null, 'Contenidos'), summary), h('button', { class: 'btn primary', onclick: picker }, '+ Añadir contenidos')), list),
     h('div', { class: 'card form' }, h('h2', null, 'Cintillo de noticias (texto en movimiento)'), tickerEditor(state.ticker, { toggle: true }))
   );
@@ -1060,18 +1228,124 @@ function clockEditor(c) {
   return el;
 }
 
+// ---------------------------------------------------------------- Transiciones
+const TRANSITIONS = [
+  ['fade', '🌫️ Fundido'],
+  ['slide', '⬅️ Deslizar desde la derecha'],
+  ['slide-right', '➡️ Deslizar desde la izquierda'],
+  ['slide-up', '⬆️ Deslizar desde abajo'],
+  ['slide-down', '⬇️ Deslizar desde arriba'],
+  ['zoom', '🔍 Zoom'],
+  ['none', '✂️ Corte (sin transición)'],
+];
+
+function itemTransition(it) {
+  const sel = h('select', { class: 'compact' }, h('option', { value: '' }, 'La de la lista'), TRANSITIONS.map(([v, l]) => h('option', { value: v, selected: it.transition === v }, l)));
+  sel.addEventListener('change', () => (it.transition = sel.value));
+  return sel;
+}
+
+/** Estado inicial (entrada) y final de cada efecto, compartido con el reproductor web. */
+function transitionFrames(type) {
+  switch (type) {
+    case 'slide': return { in: 'translateX(100%)', out: 'translateX(-100%)' };
+    case 'slide-right': return { in: 'translateX(-100%)', out: 'translateX(100%)' };
+    case 'slide-up': return { in: 'translateY(100%)', out: 'translateY(-100%)' };
+    case 'slide-down': return { in: 'translateY(-100%)', out: 'translateY(100%)' };
+    case 'zoom': return { in: 'scale(1.18)', out: 'scale(1)', fade: true };
+    case 'none': return null;
+    default: return { in: 'none', out: 'none', fade: true };
+  }
+}
+
+/** Tipo de transición, duración y una demostración en vivo. */
+function transitionEditor(state) {
+  const demo = h('div', { class: 'tdemo' });
+  const panels = [h('div', { class: 'tpanel a' }, 'A'), h('div', { class: 'tpanel b' }, 'B')];
+  panels.forEach((p) => demo.append(p));
+  let showing = 0;
+  const play = () => {
+    const f = transitionFrames(state.transition);
+    const inEl = panels[1 - showing];
+    const outEl = panels[showing];
+    const ms = state.transitionDuration;
+    [inEl, outEl].forEach((el) => (el.style.transition = 'none'));
+    inEl.style.zIndex = 2;
+    outEl.style.zIndex = 1;
+    inEl.style.transform = f ? f.in : 'none';
+    inEl.style.opacity = f && f.fade ? 0 : 1;
+    outEl.style.transform = 'none';
+    outEl.style.opacity = 1;
+    void inEl.offsetWidth;
+    if (f) {
+      const tr = `transform ${ms}ms ease, opacity ${ms}ms ease`;
+      inEl.style.transition = tr;
+      if (!f.fade) outEl.style.transition = tr;
+    }
+    inEl.style.transform = 'none';
+    inEl.style.opacity = 1;
+    if (f && !f.fade) outEl.style.transform = f.out;
+    showing = 1 - showing;
+  };
+  const type = h('select', null, TRANSITIONS.map(([v, l]) => h('option', { value: v, selected: state.transition === v }, l)));
+  const dur = h('input', { type: 'range', min: 100, max: 3000, step: 100, value: state.transitionDuration });
+  const durLabel = h('b', null, (state.transitionDuration / 1000).toFixed(1) + ' s');
+  type.addEventListener('change', () => {
+    state.transition = type.value;
+    play();
+  });
+  dur.addEventListener('input', () => {
+    state.transitionDuration = Number(dur.value);
+    durLabel.textContent = (state.transitionDuration / 1000).toFixed(1) + ' s';
+  });
+  dur.addEventListener('change', play);
+  setTimeout(play, 300);
+  return h(
+    'div',
+    { class: 'tedit' },
+    h(
+      'div',
+      { class: 'form' },
+      field('Efecto entre contenidos', type),
+      field(h('span', null, 'Duración de la transición: ', durLabel), dur),
+      h('div', { class: 'muted' }, 'Puede cambiar la transición de un contenido concreto en su fila ("Transición de entrada"). En videowalls se usa siempre corte para mantener la sincronía, y en el modo ligero los videos entran por corte.'),
+      h('div', null, h('button', { type: 'button', class: 'btn', onclick: play }, '▶ Probar transición'))
+    ),
+    demo
+  );
+}
+
 // ---------------------------------------------------------------- Programación
 const DAY_FULL = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const fmtYMD = (v) => (v ? new Date(v + 'T00:00:00').toLocaleDateString('es', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
 
+const REPEAT = {
+  always: { icon: '🔁', label: 'Siempre (en bucle)', hint: 'Se reproduce continuamente, las 24 horas, todos los días.' },
+  daily: { icon: '📅', label: 'Todos los días', hint: 'Cada día en la franja horaria indicada (opcionalmente entre dos fechas).' },
+  weekly: { icon: '🗓️', label: 'Por semana', hint: 'Sólo los días de la semana marcados, en la franja horaria indicada.' },
+  custom: { icon: '⏱️', label: 'Fechas y horas personalizadas', hint: 'Desde una fecha y hora exactas hasta otra (por ejemplo una campaña del viernes 18:00 al domingo 22:00).' },
+};
+const repeatOf = (s) => s.repeat || (s.days?.length ? 'weekly' : 'daily');
+const fmtStamp = (v) => (v ? new Date(v).toLocaleString('es', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
+
 function describeDays(s) {
+  const r = repeatOf(s);
+  if (r === 'always') return 'Todos los días, 24 h';
+  if (r === 'custom') return 'Periodo continuo';
+  if (r === 'daily') return 'Todos los días';
   return s.days?.length && s.days.length < 7 ? s.days.slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map((d) => DAYS[d]).join(', ') : 'Todos los días';
 }
 function describeHours(s) {
+  const r = repeatOf(s);
+  if (r === 'always') return 'Siempre';
+  if (r === 'custom') return `${fmtStamp(s.startAt)} → ${fmtStamp(s.endAt)}`;
   return s.startTime || s.endTime ? `${s.startTime || '00:00'} – ${s.endTime || '24:00'}` : 'Todo el día';
 }
 function describeDates(s) {
-  if (!s.startDate && !s.endDate) return 'Siempre';
+  const r = repeatOf(s);
+  if (r === 'always') return 'Siempre';
+  if (r === 'custom') return 'Del ' + fmtStamp(s.startAt).split(',')[0] + ' al ' + fmtStamp(s.endAt).split(',')[0];
+  if (!s.startDate && !s.endDate) return 'Sin fecha límite';
   if (s.startDate && s.endDate) return `${fmtYMD(s.startDate)} → ${fmtYMD(s.endDate)}`;
   return s.startDate ? `Desde ${fmtYMD(s.startDate)}` : `Hasta ${fmtYMD(s.endDate)}`;
 }
@@ -1079,7 +1353,11 @@ function describeDates(s) {
 pages.programacion = async (main) => {
   const [schedules, cat, displays, walls] = await Promise.all([api('GET', '/api/schedules'), loadCatalog(), api('GET', '/api/displays'), api('GET', '/api/walls')]);
   const targets = (s) => {
-    const names = [...(s.displayIds || []).map((id) => displays.find((d) => d.id === id)?.name || '?'), ...(s.wallIds || []).map((id) => '🧱 ' + (walls.find((w) => w.id === id)?.name || '?'))];
+    const names = [
+      ...(s.groupIds || []).map((id) => '🏢 ' + (cat.groups.find((g) => g.id === id)?.name || '?')),
+      ...(s.displayIds || []).map((id) => displays.find((d) => d.id === id)?.name || '?'),
+      ...(s.wallIds || []).map((id) => '🧱 ' + (walls.find((w) => w.id === id)?.name || '?')),
+    ];
     return names.length ? names.join(', ') : 'Todas las pantallas';
   };
   const hasContent = cat.playlists.length || cat.layouts.length;
@@ -1107,7 +1385,7 @@ pages.programacion = async (main) => {
             h(
               'table',
               { class: 'sched' },
-              h('thead', null, h('tr', null, h('th', null, 'Contenido'), h('th', null, 'Evento'), h('th', null, 'Fecha'), h('th', null, 'Horario'), h('th', null, 'Pantallas'), h('th', null, 'Prioridad'), h('th', null, 'Estado'), h('th', null, ''))),
+              h('thead', null, h('tr', null, h('th', null, 'Contenido'), h('th', null, 'Evento'), h('th', null, 'Repetición'), h('th', null, 'Fecha'), h('th', null, 'Horario'), h('th', null, 'Pantallas'), h('th', null, 'Prioridad'), h('th', null, 'Estado'), h('th', null, ''))),
               h(
                 'tbody',
                 null,
@@ -1118,11 +1396,22 @@ pages.programacion = async (main) => {
                     null,
                     h('td', null, h('div', { class: 'thumb-cell', title: 'Vista previa', onclick: () => contentRecord(key, cat) && previewContent(key, contentLabel(key, cat), contentRecord(key, cat)?.orientation === 'portrait') }, contentThumb(key, cat), h('span', null, contentLabel(key, cat)))),
                     h('td', null, h('b', null, s.name)),
+                    h('td', null, h('span', { class: 'badge blue' }, REPEAT[repeatOf(s)].icon + ' ' + REPEAT[repeatOf(s)].label)),
                     h('td', null, h('div', null, '📅 ', describeDates(s)), h('div', { class: 'muted' }, describeDays(s))),
                     h('td', null, '🕒 ', describeHours(s)),
                     h('td', { class: 'muted' }, targets(s)),
                     h('td', null, s.priority),
-                    h('td', null, s.enabled === false ? h('span', { class: 'badge off' }, 'Desactivado') : PCSchedule.isActive(s, now) ? h('span', { class: 'badge ok' }, 'Activo ahora') : h('span', { class: 'badge' }, 'En espera')),
+                    h(
+                      'td',
+                      null,
+                      s.enabled === false
+                        ? h('span', { class: 'badge off' }, 'Desactivado')
+                        : PCSchedule.isActive(s, now)
+                          ? h('span', { class: 'badge ok' }, 'Activo ahora')
+                          : repeatOf(s) === 'custom' && s.endAt && PCSchedule.localStamp(now) >= s.endAt
+                            ? h('span', { class: 'badge off' }, 'Finalizado')
+                            : h('span', { class: 'badge' }, 'En espera')
+                    ),
                     h(
                       'td',
                       null,
@@ -1172,14 +1461,27 @@ function weekView(schedules, cat) {
     col.append(body);
     schedules.forEach((s, idx) => {
       if (s.enabled === false) return;
-      // ¿Aplica ese día? Se prueba a las 12:00 sin franja horaria
-      const probe = { ...s, startTime: '', endTime: '' };
-      const noon = new Date(day);
-      noon.setHours(12);
-      const start = PCSchedule.toMinutes(s.startTime, 0);
-      const end = PCSchedule.toMinutes(s.endTime, 1440);
-      const pieces = start < end ? [[start, end]] : start === end ? [[0, 1440]] : [[start, 1440]];
-      if (!PCSchedule.isActive(probe, noon)) return;
+      const r = repeatOf(s);
+      let pieces;
+      if (r === 'always') pieces = [[0, 1440]];
+      else if (r === 'custom') {
+        // Parte del periodo que cae en este día
+        const dayStart = PCSchedule.ymd(day) + 'T00:00';
+        const dayEnd = PCSchedule.ymd(day) + 'T24:00';
+        if (!s.startAt || !s.endAt || s.endAt <= dayStart || s.startAt >= dayEnd) return;
+        const a = s.startAt > dayStart ? PCSchedule.toMinutes(s.startAt.slice(11), 0) : 0;
+        const b = s.endAt < dayEnd ? PCSchedule.toMinutes(s.endAt.slice(11), 1440) : 1440;
+        pieces = [[a, b]];
+      } else {
+        // ¿Aplica ese día? Se prueba a las 12:00 sin franja horaria
+        const probe = { ...s, startTime: '', endTime: '' };
+        const noon = new Date(day);
+        noon.setHours(12);
+        if (!PCSchedule.isActive(probe, noon)) return;
+        const start = PCSchedule.toMinutes(s.startTime, 0);
+        const end = PCSchedule.toMinutes(s.endTime, 1440);
+        pieces = start < end ? [[start, end]] : start === end ? [[0, 1440]] : [[start, 1440]];
+      }
       const key = PCSchedule.contentKey(s);
       pieces.forEach(([a, b]) =>
         body.append(
@@ -1202,23 +1504,74 @@ function scheduleEditor(s, cat, displays, walls) {
   const days = new Set(s?.days || []);
   const dsel = new Set(s?.displayIds || []);
   const wsel = new Set(s?.wallIds || []);
+  const gsel = new Set(s?.groupIds || []);
+  let repeat = s ? repeatOf(s) : 'weekly';
   const current = s ? PCSchedule.contentKey(s) : '';
   const thumb = h('div', { class: 'sched-thumb' });
   const select = h('select', { name: 'content', required: true }, contentOptions(cat, current, null));
   const updThumb = () => mount(thumb, contentThumb(select.value, cat), h('span', { class: 'muted' }, contentLabel(select.value, cat)));
   select.addEventListener('change', updThumb);
+
+  const now = new Date();
+  const stamp = (d) => PCSchedule.localStamp(d);
+  const plusDays = (n) => new Date(now.getTime() + n * 86400000);
+  const sections = {
+    days: h('div', null, h('b', null, 'Días de la semana'), h('div', { class: 'checks' }, [1, 2, 3, 4, 5, 6, 0].map((d) => h('label', null, h('input', { type: 'checkbox', 'data-day': d, checked: days.has(d) }), DAY_FULL[d])))),
+    hours: h('div', { class: 'row' }, field('🕒 Hora de inicio', h('input', { type: 'time', name: 'startTime', value: s?.startTime || '' })), field('🕒 Hora de fin', h('input', { type: 'time', name: 'endTime', value: s?.endTime || '' }), 'Vacío = todo el día. Si el fin es anterior al inicio cruza la medianoche.')),
+    dates: h('div', { class: 'row' }, field('📅 Desde la fecha (opcional)', h('input', { type: 'date', name: 'startDate', value: s?.startDate || '' })), field('📅 Hasta la fecha (opcional)', h('input', { type: 'date', name: 'endDate', value: s?.endDate || '' }))),
+    custom: h(
+      'div',
+      { class: 'row' },
+      field('⏱️ Empieza', h('input', { type: 'datetime-local', name: 'startAt', value: s?.startAt || stamp(now).slice(0, 11) + '08:00' })),
+      field('⏱️ Termina', h('input', { type: 'datetime-local', name: 'endAt', value: s?.endAt || stamp(plusDays(7)).slice(0, 11) + '20:00' }))
+    ),
+  };
+  const hint = h('div', { class: 'tip' });
+  const tabs = h('div', { class: 'seg' });
+  const showRepeat = () => {
+    tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.r === repeat));
+    sections.days.classList.toggle('hidden', repeat !== 'weekly');
+    sections.hours.classList.toggle('hidden', repeat === 'always' || repeat === 'custom');
+    sections.dates.classList.toggle('hidden', repeat === 'always' || repeat === 'custom');
+    sections.custom.classList.toggle('hidden', repeat !== 'custom');
+    hint.textContent = REPEAT[repeat].hint;
+  };
+  Object.entries(REPEAT).forEach(([k, r]) =>
+    tabs.append(
+      h(
+        'button',
+        {
+          type: 'button',
+          'data-r': k,
+          onclick: () => {
+            repeat = k;
+            showRepeat();
+          },
+        },
+        r.icon + ' ' + r.label
+      )
+    )
+  );
+  const authorized = displays.filter((d) => d.authorized);
   const form = h(
     'form',
     { class: 'form' },
     h('h2', null, s ? 'Editar evento' : 'Nuevo evento'),
     h('div', { class: 'row' }, field('Nombre', h('input', { name: 'name', value: s?.name || '', placeholder: 'Ej. Menú del desayuno', required: true })), field('Contenido', select)),
     thumb,
-    h('div', null, h('b', null, 'Días de la semana '), h('span', { class: 'muted' }, '(ninguno = todos)'), h('div', { class: 'checks' }, [1, 2, 3, 4, 5, 6, 0].map((d) => h('label', null, h('input', { type: 'checkbox', 'data-day': d, checked: days.has(d) }), DAY_FULL[d])))),
-    h('div', { class: 'row' }, field('🕒 Hora de inicio', h('input', { type: 'time', name: 'startTime', value: s?.startTime || '' })), field('🕒 Hora de fin', h('input', { type: 'time', name: 'endTime', value: s?.endTime || '' }), 'Vacío = todo el día. Si el fin es anterior al inicio cruza la medianoche.')),
-    h('div', { class: 'row' }, field('📅 Desde la fecha', h('input', { type: 'date', name: 'startDate', value: s?.startDate || '' })), field('📅 Hasta la fecha', h('input', { type: 'date', name: 'endDate', value: s?.endDate || '' }))),
-    h('div', { class: 'row' }, field('Prioridad (0–100)', h('input', { type: 'number', name: 'priority', min: 0, max: 100, value: s?.priority ?? 1 })), h('div', { class: 'checks shrink' }, h('label', null, h('input', { type: 'checkbox', name: 'enabled', checked: s ? s.enabled !== false : true }), 'Activado'))),
-    h('div', null, h('b', null, 'Pantallas '), h('span', { class: 'muted' }, '(ninguna = todas)'), h('div', { class: 'checks' }, displays.filter((d) => d.authorized).map((d) => h('label', null, h('input', { type: 'checkbox', 'data-display': d.id, checked: dsel.has(d.id) }), (d.number ? `#${d.number} ` : '') + d.name)))),
-    walls.length ? h('div', null, h('b', null, 'Videowalls'), h('div', { class: 'checks' }, walls.map((w) => h('label', null, h('input', { type: 'checkbox', 'data-wall': w.id, checked: wsel.has(w.id) }), '🧱 ' + w.name)))) : null,
+    h('div', null, h('b', null, 'Repetición'), tabs),
+    hint,
+    sections.custom,
+    sections.days,
+    sections.hours,
+    sections.dates,
+    h('div', { class: 'row' }, field('Prioridad (0–100)', h('input', { type: 'number', name: 'priority', min: 0, max: 100, value: s?.priority ?? 1 }), 'Si coinciden varios eventos, gana el de mayor prioridad.'), h('div', { class: 'checks shrink' }, h('label', null, h('input', { type: 'checkbox', name: 'enabled', checked: s ? s.enabled !== false : true }), 'Activado'))),
+    h('div', { class: 'tip' }, '¿Dónde se muestra? Marque sucursales, pantallas o videowalls. Si no marca nada, se muestra en todas las pantallas.'),
+    cat.groups.length
+      ? h('div', null, h('b', null, '🏢 Sucursales'), h('div', { class: 'checks' }, cat.groups.map((g) => h('label', null, h('input', { type: 'checkbox', 'data-group': g.id, checked: gsel.has(g.id) }), h('span', { class: 'gdot', style: { background: g.color } }), `${g.name} (${authorized.filter((d) => d.groupId === g.id).length})`))))
+      : h('div', { class: 'muted' }, 'Consejo: cree ', h('a', { href: '#/sucursales', onclick: closeModal }, 'sucursales'), ' para programar por sucursal.'),
+    h('div', null, h('b', null, '🖥️ Pantallas'), h('div', { class: 'checks' }, authorized.map((d) => h('label', null, h('input', { type: 'checkbox', 'data-display': d.id, checked: dsel.has(d.id) }), (d.number ? `#${d.number} ` : '') + d.name + (d.group ? ` · ${d.group}` : ''))))),
+    walls.length ? h('div', null, h('b', null, '🧱 Videowalls'), h('div', { class: 'checks' }, walls.map((w) => h('label', null, h('input', { type: 'checkbox', 'data-wall': w.id, checked: wsel.has(w.id) }), w.name)))) : null,
     h('div', { class: 'modal-foot' }, h('button', { type: 'button', class: 'btn', onclick: closeModal }, 'Cancelar'), h('button', { class: 'btn primary' }, 'Guardar'))
   );
   form.addEventListener('submit', (e) => {
@@ -1226,11 +1579,15 @@ function scheduleEditor(s, cat, displays, walls) {
     const v = formData(form);
     const body = {
       ...v,
+      repeat,
       enabled: !!form.querySelector('[name=enabled]').checked,
-      days: [...form.querySelectorAll('[data-day]:checked')].map((x) => Number(x.dataset.day)),
+      days: repeat === 'weekly' ? [...form.querySelectorAll('[data-day]:checked')].map((x) => Number(x.dataset.day)) : [],
       displayIds: [...form.querySelectorAll('[data-display]:checked')].map((x) => x.dataset.display),
       wallIds: [...form.querySelectorAll('[data-wall]:checked')].map((x) => x.dataset.wall),
+      groupIds: [...form.querySelectorAll('[data-group]:checked')].map((x) => x.dataset.group),
     };
+    if (repeat === 'always' || repeat === 'custom') Object.assign(body, { startTime: '', endTime: '', startDate: '', endDate: '' });
+    if (repeat === 'weekly' && !body.days.length) return toast('Marque al menos un día de la semana', true);
     guard(async () => {
       if (s) await api('PUT', '/api/schedules/' + s.id, body);
       else await api('POST', '/api/schedules', body);
@@ -1239,13 +1596,15 @@ function scheduleEditor(s, cat, displays, walls) {
       route();
     });
   });
-  modal(form);
+  modal(form, { wide: true });
   updThumb();
+  showRepeat();
 }
 
 // ---------------------------------------------------------------- Anuncio inmediato
 pages.anuncio = async (main) => {
-  const displays = (await api('GET', '/api/displays')).filter((d) => d.authorized);
+  const [allDisplays, groups] = await Promise.all([api('GET', '/api/displays'), api('GET', '/api/groups')]);
+  const displays = allDisplays.filter((d) => d.authorized);
   const preview = h('div', { style: { borderRadius: '8px', aspectRatio: '16/9', display: 'grid', placeItems: 'center', padding: '24px', fontSize: '28px', fontWeight: 800, textAlign: 'center', whiteSpace: 'pre-wrap' } });
   const form = h(
     'form',
@@ -1259,7 +1618,8 @@ pages.anuncio = async (main) => {
       field('Fondo', h('input', { type: 'color', name: 'bg', value: '#dc2626' })),
       field('Texto', h('input', { type: 'color', name: 'color', value: '#ffffff' }))
     ),
-    h('div', null, h('b', null, 'Pantallas '), h('span', { class: 'muted' }, '(ninguna = todas)'), h('div', { class: 'checks' }, displays.map((d) => h('label', null, h('input', { type: 'checkbox', 'data-display': d.id }), d.name, d.online ? '' : ' (desconectada)')))),
+    groups.length ? h('div', null, h('b', null, '🏢 Sucursales'), h('div', { class: 'checks' }, groups.map((g) => h('label', null, h('input', { type: 'checkbox', 'data-group': g.id }), h('span', { class: 'gdot', style: { background: g.color } }), g.name)))) : null,
+    h('div', null, h('b', null, 'Pantallas '), h('span', { class: 'muted' }, '(nada marcado = todas)'), h('div', { class: 'checks' }, displays.map((d) => h('label', null, h('input', { type: 'checkbox', 'data-display': d.id }), d.name, d.online ? '' : ' (desconectada)')))),
     h('div', null, h('b', null, 'Vista previa'), preview),
     h('div', { class: 'actions' }, h('button', { class: 'btn primary' }, '📢 Enviar ahora'), h('button', { type: 'button', class: 'btn', onclick: () => sendAnnounce({ type: 'clearAnnouncement' }) }, 'Quitar anuncio actual'))
   );
@@ -1270,7 +1630,12 @@ pages.anuncio = async (main) => {
   };
   const sendAnnounce = (extra) =>
     guard(async () => {
-      const body = { ...formData(form), displayIds: [...form.querySelectorAll('[data-display]:checked')].map((x) => x.dataset.display), ...extra };
+      const body = {
+        ...formData(form),
+        displayIds: [...form.querySelectorAll('[data-display]:checked')].map((x) => x.dataset.display),
+        groupIds: [...form.querySelectorAll('[data-group]:checked')].map((x) => x.dataset.group),
+        ...extra,
+      };
       const r = await api('POST', '/api/announce', body);
       toast(`Enviado a ${r.delivered} de ${r.total} pantalla(s) conectada(s)`, !r.delivered);
     });

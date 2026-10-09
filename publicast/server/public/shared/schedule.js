@@ -37,8 +37,28 @@
     return true;
   }
 
+  /** 'YYYY-MM-DDTHH:MM' en hora local, comparable como texto. */
+  function localStamp(d) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${ymd(d)}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  /**
+   * Modos de repetición:
+   *  - 'always' → siempre, en bucle continuo
+   *  - 'daily'  → todos los días en la franja horaria (y rango de fechas opcional)
+   *  - 'weekly' → los días de la semana marcados, en la franja horaria
+   *  - 'custom' → desde una fecha y hora hasta otra (startAt / endAt)
+   *  Sin modo (versiones anteriores): días + horas + fechas.
+   */
   function isActive(s, now) {
     if (s.enabled === false) return false;
+    if (s.repeat === 'always') return true;
+    if (s.repeat === 'custom') {
+      const t = localStamp(now);
+      return (!s.startAt || t >= s.startAt) && (!s.endAt || t < s.endAt);
+    }
+    if (s.repeat === 'daily') s = Object.assign({}, s, { days: [] });
     const t = now.getHours() * 60 + now.getMinutes();
     const start = toMinutes(s.startTime, 0);
     const end = toMinutes(s.endTime, 24 * 60);
@@ -91,5 +111,5 @@
     return { keys, playlistIds: keys.filter((k) => k.startsWith('p:')).map((k) => k.slice(2)), scheduleIds: ids, source };
   }
 
-  return { resolve, isActive, toMinutes, ymd, contentKey, normalizeKey };
+  return { resolve, isActive, toMinutes, ymd, localStamp, contentKey, normalizeKey };
 });

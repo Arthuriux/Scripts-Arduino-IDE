@@ -23,8 +23,14 @@ contenido multimedia, información y anuncios desde un servidor central a pantal
 | **Layouts** | Pantalla dividida en zonas que se **arrastran y redimensionan** con el ratón: listas de reproducción, cintillo y **reloj con fecha**. Plantillas (Noticiero, Principal + lateral, 2 × 2, forma de L…), orden de capas y formato horizontal o vertical. |
 | **Videowall** | Varias pantallas (hasta 8 × 8) forman una sola imagen: cada una muestra su porción y todas cambian a la vez, sincronizadas con la hora del servidor. |
 | **Identificar** | Como en Windows: cada pantalla muestra en grande su número (1, 2, 3…), su nombre y su posición en el videowall. |
-| **Programación** | Eventos por días, franja horaria (incluso nocturna, p. ej. 22:00–06:00), rango de fechas, prioridad y pantallas o videowalls destino. Tabla con **miniatura**, **fecha** y **horario** de cada evento, reloj en vivo y **vista semanal**. |
+| **Programación** | Repetición **siempre (bucle)**, **diaria**, **semanal** o **fechas y horas personalizadas**; eventos por días, franja horaria (incluso nocturna, p. ej. 22:00–06:00), rango de fechas, prioridad y pantallas o videowalls destino. Tabla con **miniatura**, **fecha** y **horario** de cada evento, reloj en vivo y **vista semanal**. |
 | **Pantallas** | Emparejamiento seguro con código de 6 dígitos, número de pantalla, estado en línea/desconectada, qué se está reproduciendo, modelo, resolución, espacio libre, orientación, comandos *Identificar* y *Recargar*. |
+| **Sucursales** | Grupos de pantallas por local o zona: programación, anuncios y filtros por sucursal. |
+| **HTML local** | Archivos `.html` sueltos, carpetas completas (con imágenes/CSS/JS) o rutas `file:///` del equipo servidor; se reproducen sin conexión y aislados (sandbox). |
+| **Transiciones** | Fundido, deslizar en 4 direcciones, zoom o corte, con duración configurable, demostración en vivo y transición propia por contenido. |
+| **Vista de pantallas** | Miniatura con la captura real de cada pantalla (cada 5 min o al pedirla) y simulación en vivo del contenido. |
+| **Servidor** | Consumo de CPU, RAM y disco del equipo servidor en tiempo real, con gráficos de los últimos 30 minutos. |
+| **Apariencia** | Tema claro, oscuro o automático en todo el panel. |
 | **Cómo usar** | Guía paso a paso de todas las funciones dentro del propio panel. |
 | **Anuncio inmediato** | Mensaje urgente al instante (pantalla completa o banda superior/inferior) en una, varias o todas las pantallas, por WebSocket. |
 | **Estadísticas** | Prueba de reproducción (*proof of play*): cuántas veces y cuánto tiempo se mostró cada anuncio por pantalla. Exportación a CSV. |

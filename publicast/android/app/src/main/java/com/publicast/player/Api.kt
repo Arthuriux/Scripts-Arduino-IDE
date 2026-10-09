@@ -52,6 +52,13 @@ class Api(val baseUrl: String, private val key: String) {
 
     fun heartbeat(body: JSONObject): JSONObject = JSONObject(call("POST", "/api/player/heartbeat", body))
 
+    /** Envía una captura JPEG de lo que muestra la pantalla (vista previa en el panel). */
+    fun screenshot(jpeg: ByteArray) {
+        val req = Request.Builder().url(absolute("/api/player/screenshot")).header("Authorization", "Bearer $key")
+            .post(jpeg.toRequestBody("image/jpeg".toMediaType())).build()
+        client.newCall(req).execute().use { if (!it.isSuccessful) throw HttpException(it.code, "") }
+    }
+
     fun stats(body: JSONObject) {
         call("POST", "/api/player/stats", body)
     }

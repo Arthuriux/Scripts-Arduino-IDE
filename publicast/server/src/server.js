@@ -59,6 +59,8 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     db.get('schedules').forEach((s) => {
       if (!s.content && s.playlistId) s.content = 'p:' + s.playlistId;
       if (!s.wallIds) s.wallIds = [];
+      if (!s.groupIds) s.groupIds = [];
+      if (!s.repeat) s.repeat = s.days?.length ? 'weekly' : !s.startTime && !s.endTime && !s.startDate && !s.endDate ? 'always' : 'daily';
     });
     db.save();
   })();
@@ -140,8 +142,9 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
       if (s.enabled === false) return false;
       const dIds = s.displayIds || [];
       const wIds = s.wallIds || [];
-      if (!dIds.length && !wIds.length) return true;
-      return dIds.includes(d.id) || (w && wIds.includes(w.wall.id));
+      const gIds = s.groupIds || [];
+      if (!dIds.length && !wIds.length && !gIds.length) return true;
+      return dIds.includes(d.id) || (w && wIds.includes(w.wall.id)) || (d.groupId && gIds.includes(d.groupId));
     });
   }
 
@@ -160,7 +163,10 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
       online: isOnline(d),
       connected: (sockets.get(d.id)?.size || 0) > 0,
       nowPlaying: now.keys.map(contentName).filter(Boolean),
+      nowKeys: now.keys,
       nowSource: now.source,
+      group: d.groupId ? db.find('groups', d.groupId)?.name || null : null,
+      hasScreenshot: !!d.screenshotAt,
       wall: w ? { id: w.wall.id, name: w.wall.name, row: w.cell.row, col: w.cell.col } : null,
     };
   }
@@ -276,12 +282,20 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     });
   }
 
+  const htmlUrl = (m, rel) => `/media/html/${m.dir}/${rel.split('/').map(encodeURIComponent).join('/')}`;
+
   app.get('/api/media', requireAdmin, (req, res) => {
     const used = new Map();
     db.get('playlists').forEach((p) =>
       p.items.forEach((i) => used.set(i.mediaId, (used.get(i.mediaId) || 0) + 1))
     );
-    res.json(db.get('media').map((m) => ({ ...m, url: m.file ? `/media/${m.file}` : null, usedIn: used.get(m.id) || 0 })));
+    res.json(
+      db.get('media').map((m) => ({
+        ...m,
+        url: m.file ? `/media/${m.file}` : m.type === 'html' ? htmlUrl(m, m.entry) : m.url || null,
+        usedIn: used.get(m.id) || 0,
+      }))
+    );
   });
 
   app.post('/api/media/upload', requireAdmin, upload.array('files', 20), async (req, res) => {
@@ -363,6 +377,117 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     res.json(db.find('media', m.id));
   });
 
+  // ---------- Contenido HTML local (archivo .html suelto, carpeta con recursos o ruta file:///) ----------
+  const HTML_EXT = ['.html', '.htm', '.css', '.js', '.mjs', '.json', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.bmp',
+    '.woff', '.woff2', '.ttf', '.otf', '.eot', '.mp4', '.webm', '.mp3', '.wav', '.ogg', '.m4a', '.txt', '.xml', '.csv', '.map'];
+  const htmlDir = path.join(mediaDir, 'html');
+  const tmpDir = path.join(dataDir, 'tmp');
+  fs.mkdirSync(htmlDir, { recursive: true });
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  /** Ruta relativa segura (sin "..", sin unidades ni barras iniciales). */
+  function safeRel(rel) {
+    const clean = path.posix.normalize(String(rel || '').replace(/\\/g, '/').replace(/^[a-zA-Z]:/, '').replace(/^\/+/, ''));
+    if (!clean || clean === '.' || clean.startsWith('..') || clean.includes('\0')) return null;
+    return clean;
+  }
+
+  /** Crea el contenido HTML a partir de una lista de {rel, src} (archivos ya en disco). */
+  async function createHtmlMedia(name, list, entryHint, move) {
+    list = list.filter((f) => f.rel && HTML_EXT.includes(path.extname(f.rel).toLowerCase())).slice(0, 1000);
+    // Si todo viene dentro de una misma carpeta, se quita ese primer nivel
+    const firstSeg = list.length && list.every((f) => f.rel.includes('/')) ? list[0].rel.split('/')[0] : null;
+    if (firstSeg && list.every((f) => f.rel.split('/')[0] === firstSeg)) list.forEach((f) => (f.rel = f.rel.slice(firstSeg.length + 1)));
+    const htmls = list.filter((f) => /\.html?$/i.test(f.rel)).sort((a, b) => a.rel.split('/').length - b.rel.split('/').length);
+    if (!htmls.length) throw new Error('No se encontró ningún archivo .html');
+    const entry =
+      (entryHint && htmls.find((f) => f.rel === entryHint)) || htmls.find((f) => /(^|\/)index\.html?$/i.test(f.rel)) || htmls[0];
+    const id = newId();
+    const dir = path.join(htmlDir, id);
+    const files = [];
+    for (const f of list) {
+      const dest = path.join(dir, ...f.rel.split('/'));
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      if (move) fs.renameSync(f.src, dest);
+      else fs.copyFileSync(f.src, dest);
+      files.push({ path: f.rel, size: fs.statSync(dest).size, md5: await md5File(dest) });
+    }
+    return db.insert('media', {
+      name: name || path.basename(entry.rel),
+      type: 'html',
+      dir: id,
+      entry: entry.rel,
+      files,
+      size: files.reduce((t, f) => t + f.size, 0),
+      duration: 30,
+    });
+  }
+
+  const htmlUpload = multer({ dest: tmpDir, preservePath: true, limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 1000 } });
+  app.post('/api/media/html', requireAdmin, htmlUpload.array('files', 1000), async (req, res) => {
+    const uploaded = req.files || [];
+    const cleanup = () => uploaded.forEach((f) => fs.rm(f.path, { force: true }, () => {}));
+    try {
+      const list = uploaded
+        .map((f) => ({ rel: safeRel(Buffer.from(f.originalname, 'latin1').toString('utf8')), src: f.path }))
+        .filter((f) => f.rel);
+      const m = await createHtmlMedia(str(req.body?.name, 200), list, safeRel(req.body?.entry), true);
+      cleanup();
+      log(`Contenido HTML subido: ${m.name} (${m.files.length} archivo/s)`);
+      res.json(m);
+    } catch (e) {
+      cleanup();
+      bad(res, e.message);
+    }
+  });
+
+  /**
+   * Importa un HTML que ya está en el equipo del servidor (p. ej. file:///C:/Users/.../pagina.html),
+   * junto con las imágenes, estilos y scripts que referencia dentro de su carpeta.
+   */
+  app.post('/api/media/html-path', requireAdmin, async (req, res) => {
+    try {
+      let p = str(req.body?.path, 2000).replace(/^"|"$/g, '');
+      if (/^file:/i.test(p)) p = require('url').fileURLToPath(p);
+      p = path.resolve(p);
+      if (!/\.html?$/i.test(p)) throw new Error('Indique un archivo .html o .htm');
+      if (!fs.existsSync(p)) throw new Error('No se encontró el archivo en el servidor: ' + p + ' (la ruta debe existir en el equipo donde corre el servidor)');
+      const base = path.dirname(p);
+      const found = new Map([[path.basename(p), p]]);
+      const missing = [];
+      const queue = [p];
+      while (queue.length && found.size < 500) {
+        const file = queue.shift();
+        if (!/\.(html?|css)$/i.test(file)) continue;
+        const text = fs.readFileSync(file, 'utf8');
+        const refs = [...text.matchAll(/(?:src|href|poster|data-src)\s*=\s*["']([^"'#?]+)/gi), ...text.matchAll(/url\(\s*["']?([^"')#?]+)/gi)].map((m) => m[1].trim());
+        for (const ref of refs) {
+          if (!ref || /^(?:[a-z]+:|\/\/|#)/i.test(ref)) continue; // http:, data:, mailto:, //cdn…
+          let abs;
+          try {
+            abs = path.resolve(path.dirname(file), decodeURIComponent(ref));
+          } catch {
+            continue;
+          }
+          const rel = path.relative(base, abs).split(path.sep).join('/');
+          if (rel.startsWith('..') || found.has(rel)) continue;
+          if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+            missing.push(ref);
+            continue;
+          }
+          found.set(rel, abs);
+          queue.push(abs);
+        }
+      }
+      const list = [...found.entries()].map(([rel, src]) => ({ rel, src }));
+      const m = await createHtmlMedia(str(req.body?.name, 200) || path.basename(p), list, path.basename(p), false);
+      log(`HTML importado desde ${p} (${m.files.length} archivo/s)`);
+      res.json({ ...m, missing: missing.slice(0, 20) });
+    } catch (e) {
+      bad(res, e.message);
+    }
+  });
+
   // ---------- Optimización de videos para TV Box / Fire TV (requiere ffmpeg) ----------
   const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
   let ffmpegOk = false;
@@ -441,6 +566,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     });
     db.remove('media', m.id);
     if (m.file) fs.rm(path.join(mediaDir, m.file), { force: true }, () => {});
+    if (m.type === 'html' && m.dir) fs.rm(path.join(htmlDir, path.basename(m.dir)), { recursive: true, force: true }, () => {});
     changed('media');
     res.json({ ok: true });
   });
@@ -479,14 +605,21 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
   }
 
   // ---------- Listas de reproducción ----------
+  const TRANSITIONS = ['fade', 'slide', 'slide-right', 'slide-up', 'slide-down', 'zoom', 'none'];
   function playlistFields(body) {
     const items = (Array.isArray(body.items) ? body.items : [])
       .filter((i) => db.find('media', i.mediaId))
       .slice(0, 500)
-      .map((i) => ({ id: i.id || newId(), mediaId: i.mediaId, duration: num(i.duration, null, 0) }));
+      .map((i) => ({
+        id: i.id || newId(),
+        mediaId: i.mediaId,
+        duration: num(i.duration, null, 0),
+        transition: TRANSITIONS.includes(i.transition) ? i.transition : '', // '' = la de la lista
+      }));
     return {
       name: str(body.name, 200) || 'Lista sin nombre',
-      transition: ['fade', 'slide', 'none'].includes(body.transition) ? body.transition : 'fade',
+      transition: TRANSITIONS.includes(body.transition) ? body.transition : 'fade',
+      transitionDuration: num(body.transitionDuration, 800, 100, 5000),
       fit: ['contain', 'cover', 'fill'].includes(body.fit) ? body.fit : 'contain',
       background: str(body.background, 20) || '#000000',
       items,
@@ -598,6 +731,107 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     res.json({ version: 0, display: { name: 'Vista previa' }, defaultContent: key, schedules: [], playlists, layouts, files: [] });
   });
 
+  // ---------- Sucursales (grupos de pantallas) ----------
+  function groupFields(body) {
+    return {
+      name: str(body.name, 100) || 'Sucursal',
+      address: str(body.address, 300),
+      color: /^#[0-9a-f]{6}$/i.test(body.color || '') ? body.color : '#2563eb',
+    };
+  }
+  app.get('/api/groups', requireAdmin, (req, res) => res.json(db.get('groups')));
+  app.post('/api/groups', requireAdmin, (req, res) => res.json(db.insert('groups', groupFields(req.body || {}))));
+  app.put('/api/groups/:id', requireAdmin, (req, res) => {
+    if (!db.find('groups', req.params.id)) return bad(res, 'No encontrado', 404);
+    res.json(db.update('groups', req.params.id, groupFields(req.body || {})));
+  });
+  app.delete('/api/groups/:id', requireAdmin, (req, res) => {
+    const id = req.params.id;
+    if (!db.remove('groups', id)) return bad(res, 'No encontrado', 404);
+    db.get('displays').forEach((d) => d.groupId === id && db.update('displays', d.id, { groupId: null }));
+    db.get('schedules').forEach((s) => s.groupIds?.includes(id) && db.update('schedules', s.id, { groupIds: s.groupIds.filter((x) => x !== id) }));
+    changed('group');
+    res.json({ ok: true });
+  });
+  /** Asigna varias pantallas a una sucursal de una vez. */
+  app.post('/api/groups/:id/displays', requireAdmin, (req, res) => {
+    const g = db.find('groups', req.params.id);
+    if (!g) return bad(res, 'No encontrado', 404);
+    const ids = Array.isArray(req.body?.displayIds) ? req.body.displayIds : [];
+    db.get('displays').forEach((d) => {
+      if (ids.includes(d.id)) db.update('displays', d.id, { groupId: g.id });
+      else if (d.groupId === g.id) db.update('displays', d.id, { groupId: null });
+    });
+    changed('group');
+    res.json({ ok: true });
+  });
+
+  // ---------- Consumo del equipo servidor ----------
+  const os = require('os');
+  const sysHistory = [];
+  let lastCpu = os.cpus().map((c) => c.times);
+  const sampleSystem = () => {
+    const now = os.cpus().map((c) => c.times);
+    let idle = 0;
+    let total = 0;
+    now.forEach((t, i) => {
+      const p = lastCpu[i] || { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 };
+      const dt = t.user - p.user + (t.nice - p.nice) + (t.sys - p.sys) + (t.idle - p.idle) + (t.irq - p.irq);
+      idle += t.idle - p.idle;
+      total += dt;
+    });
+    lastCpu = now;
+    const cpu = total > 0 ? Math.round((1 - idle / total) * 1000) / 10 : 0;
+    const mem = Math.round((1 - os.freemem() / os.totalmem()) * 1000) / 10;
+    sysHistory.push({ t: Date.now(), cpu, mem, rss: process.memoryUsage().rss });
+    if (sysHistory.length > 360) sysHistory.shift(); // 30 minutos cada 5 s
+  };
+  setTimeout(sampleSystem, 1000).unref();
+  setInterval(sampleSystem, 5000).unref();
+
+  app.get('/api/system/stats', requireAdmin, (req, res) => {
+    let disk = null;
+    try {
+      const st = fs.statfsSync(dataDir);
+      disk = { total: st.blocks * st.bsize, free: st.bavail * st.bsize };
+    } catch {
+      /* Node < 18.15 */
+    }
+    const cpus = os.cpus();
+    const displays = db.get('displays');
+    res.json({
+      hostname: os.hostname(),
+      platform: `${os.type()} ${os.release()} (${os.arch()})`,
+      node: process.version,
+      uptime: os.uptime(),
+      processUptime: process.uptime(),
+      cpu: { model: cpus[0]?.model?.trim() || '', cores: cpus.length, usage: sysHistory.at(-1)?.cpu ?? 0 },
+      mem: { total: os.totalmem(), free: os.freemem() },
+      process: process.memoryUsage(),
+      disk,
+      dataDir,
+      storage: db.get('media').reduce((t, m) => t + (m.size || 0), 0),
+      mediaCount: db.get('media').length,
+      displays: { total: displays.length, online: displays.filter(isOnline).length, sockets: [...sockets.values()].reduce((t, s2) => t + s2.size, 0) },
+      network: Object.entries(os.networkInterfaces())
+        .flatMap(([name, list]) => (list || []).filter((i) => (i.family === 'IPv4' || i.family === 4) && !i.internal).map((i) => ({ name, address: i.address })))
+        .slice(0, 8),
+      port: PORT,
+      ffmpeg: ffmpegOk,
+      history: sysHistory,
+    });
+  });
+
+  // ---------- Capturas de pantalla de los reproductores ----------
+  const screensDir = path.join(dataDir, 'screens');
+  fs.mkdirSync(screensDir, { recursive: true });
+  app.get('/api/displays/:id/screenshot', requireAdmin, (req, res) => {
+    const file = path.join(screensDir, path.basename(req.params.id) + '.jpg');
+    if (!fs.existsSync(file)) return bad(res, 'Sin captura todavía', 404);
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(file);
+  });
+
   // ---------- Videowalls ----------
   function wallFields(body, id) {
     const rows = num(body.rows, 1, 1, 8);
@@ -674,12 +908,24 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     if (!isHHMM(startTime) || !isHHMM(endTime)) throw new Error('Formato de hora inválido (HH:MM)');
     if (!isYMD(startDate) || !isYMD(endDate)) throw new Error('Formato de fecha inválido');
     if (startDate && endDate && endDate < startDate) throw new Error('La fecha final es anterior a la inicial');
+    const repeat = ['always', 'daily', 'weekly', 'custom'].includes(body.repeat) ? body.repeat : 'weekly';
+    const isStamp = (v) => v === '' || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v);
+    const startAt = str(body.startAt, 16);
+    const endAt = str(body.endAt, 16);
+    if (repeat === 'custom') {
+      if (!isStamp(startAt) || !isStamp(endAt) || !startAt || !endAt) throw new Error('Indique la fecha y hora de inicio y de fin');
+      if (endAt <= startAt) throw new Error('El fin debe ser posterior al inicio');
+    }
     return {
+      repeat,
+      startAt: repeat === 'custom' ? startAt : '',
+      endAt: repeat === 'custom' ? endAt : '',
       name: str(body.name, 200) || 'Evento',
       content,
       playlistId: content.startsWith('p:') ? content.slice(2) : null,
       displayIds: (Array.isArray(body.displayIds) ? body.displayIds : []).filter((id) => db.find('displays', id)),
       wallIds: (Array.isArray(body.wallIds) ? body.wallIds : []).filter((id) => db.find('walls', id)),
+      groupIds: (Array.isArray(body.groupIds) ? body.groupIds : []).filter((id) => db.find('groups', id)),
       days: (Array.isArray(body.days) ? body.days : []).map(Number).filter((d) => d >= 0 && d <= 6),
       startTime,
       endTime,
@@ -735,6 +981,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
       defaultContent,
       defaultPlaylistId: defaultContent.startsWith('p:') ? defaultContent.slice(2) : null,
       number: d.number || nextDisplayNumber(),
+      groupId: db.find('groups', req.body?.groupId) ? req.body.groupId : d.groupId || null,
     });
     send(d.id, { type: 'authorized' });
     changed('display');
@@ -761,6 +1008,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
         ? req.body.orientation
         : 'auto';
     if (req.body.location !== undefined) patch.location = str(req.body.location, 200);
+    if (req.body.groupId !== undefined) patch.groupId = db.find('groups', req.body.groupId) ? req.body.groupId : null;
     if (req.body.performance !== undefined) patch.performance = ['auto', 'lite', 'high'].includes(req.body.performance) ? req.body.performance : 'auto';
     db.update('displays', d.id, patch);
     changed('display');
@@ -784,7 +1032,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
 
   function commandPayload(body) {
     const type = body.type;
-    if (type === 'reload' || type === 'clearAnnouncement') return { type };
+    if (type === 'reload' || type === 'clearAnnouncement' || type === 'screenshot') return { type };
     if (type === 'identify') return { type, seconds: num(body.seconds, 15, 3, 120) };
     if (type === 'announce') {
       const text = str(body.text, 1000);
@@ -838,7 +1086,14 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
   app.post('/api/announce', requireAdmin, (req, res) => {
     try {
       const msg = commandPayload({ ...(req.body || {}), type: req.body?.type || 'announce' });
-      const ids = Array.isArray(req.body?.displayIds) && req.body.displayIds.length ? req.body.displayIds : db.get('displays').map((d) => d.id);
+      const gIds = Array.isArray(req.body?.groupIds) ? req.body.groupIds : [];
+      const ids = [
+        ...new Set([
+          ...(Array.isArray(req.body?.displayIds) ? req.body.displayIds : []),
+          ...db.get('displays').filter((d) => d.groupId && gIds.includes(d.groupId)).map((d) => d.id),
+        ]),
+      ];
+      if (!ids.length) db.get('displays').forEach((d) => ids.push(d.id));
       const delivered = ids.reduce((t, id) => t + (send(id, msg) ? 1 : 0), 0);
       res.json({ delivered, total: ids.length });
     } catch (e) {
@@ -955,6 +1210,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
       id: p.id,
       name: p.name,
       transition: p.transition,
+      transitionDuration: p.transitionDuration || 800,
       fit: p.fit,
       background: p.background,
       ticker: { enabled: !!p.ticker?.enabled, ...tickerFields(p.ticker) },
@@ -973,6 +1229,12 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
           if (m.type === 'video' && m.naturalDuration) item.naturalDuration = m.naturalDuration;
           if (m.type === 'web') item.url = m.url;
           if (m.type === 'text') item.text = m.text;
+          if (m.type === 'html') {
+            item.url = htmlUrl(m, m.entry);
+            item.file = `html/${m.dir}/${m.entry}`;
+            item.htmlFiles = m.files.map((f) => ({ file: `html/${m.dir}/${f.path}`, url: htmlUrl(m, f.path), size: f.size, md5: f.md5 }));
+          }
+          if (it.transition) item.transition = it.transition;
           return item;
         })
         .filter(Boolean),
@@ -1021,9 +1283,11 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     const files = new Map();
     Object.values(playlists).forEach((p) =>
       p.items.forEach((it) => {
-        if (it.file) files.set(it.file, { file: it.file, url: it.url, size: it.size, md5: it.md5 });
+        if (it.htmlFiles) it.htmlFiles.forEach((f) => files.set(f.file, f));
+        else if (it.file) files.set(it.file, { file: it.file, url: it.url, size: it.size, md5: it.md5 });
       })
     );
+    Object.values(playlists).forEach((p) => p.items.forEach((it) => delete it.htmlFiles));
     const w = wallOf(d.id);
     return {
       version: db.contentVersion,
@@ -1064,6 +1328,13 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     res.json({ version: db.contentVersion, serverTime: new Date().toISOString() });
   });
 
+  app.post('/api/player/screenshot', requirePlayer, express.raw({ type: ['image/jpeg', 'image/png'], limit: '3mb' }), (req, res) => {
+    if (!Buffer.isBuffer(req.body) || req.body.length < 100) return bad(res, 'Imagen vacía');
+    fs.writeFileSync(path.join(screensDir, req.display.id + '.jpg'), req.body);
+    db.update('displays', req.display.id, { screenshotAt: new Date().toISOString() });
+    res.json({ ok: true });
+  });
+
   app.post('/api/player/stats', requirePlayer, (req, res) => {
     const records = Array.isArray(req.body?.records) ? req.body.records.slice(0, 5000) : [];
     const stats = db.get('stats');
@@ -1078,6 +1349,15 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
   });
 
   // ---------- Archivos estáticos ----------
+  // HTML subidos: aislados con "sandbox" para que sus scripts no puedan usar la sesión del panel
+  app.use(
+    '/media/html',
+    (req, res, next) => {
+      res.setHeader('Content-Security-Policy', 'sandbox allow-scripts allow-forms allow-popups allow-modals allow-presentation allow-pointer-lock');
+      next();
+    },
+    express.static(htmlDir, { maxAge: '1h', fallthrough: false })
+  );
   app.use('/media', express.static(mediaDir, { maxAge: '30d', immutable: true, fallthrough: false }));
   app.use('/admin', express.static(path.join(PUBLIC_DIR, 'admin')));
   app.use('/player', express.static(path.join(PUBLIC_DIR, 'player')));

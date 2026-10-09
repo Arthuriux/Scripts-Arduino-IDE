@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +16,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PixelCopy
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -24,6 +27,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.TextView
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.util.Calendar
 import java.util.concurrent.Executors
 
@@ -62,6 +66,13 @@ class MainActivity : Activity(), SyncManager.Listener {
         override fun run() {
             refresh()
             handler.postDelayed(this, 15_000)
+        }
+    }
+    /** Captura automática cada 5 minutos para la miniatura del panel. */
+    private val screenshotTask = object : Runnable {
+        override fun run() {
+            sendScreenshot()
+            handler.postDelayed(this, 5 * 60_000L)
         }
     }
     private val hideAnnouncement = Runnable { announceView.visibility = View.GONE }
@@ -210,6 +221,8 @@ class MainActivity : Activity(), SyncManager.Listener {
         if (!playbackStarted) {
             playbackStarted = true
             handler.postDelayed(scheduleCheck, 15_000)
+            handler.removeCallbacks(screenshotTask)
+            handler.postDelayed(screenshotTask, 20_000)
         }
         // Las medidas de la pantalla se conocen tras el primer layout
         if (root.width == 0) root.post { refresh() } else refresh()
@@ -229,6 +242,7 @@ class MainActivity : Activity(), SyncManager.Listener {
                 announceView.visibility = View.GONE
             }
             "identify" -> showIdentify(msg)
+            "screenshot" -> sendScreenshot()
             "reload" -> {
                 renderKey = null
                 sync?.requestSync()
@@ -300,6 +314,7 @@ class MainActivity : Activity(), SyncManager.Listener {
 
     private fun stopPlayback() {
         handler.removeCallbacks(scheduleCheck)
+        handler.removeCallbacks(screenshotTask)
         playbackStarted = false
         renderKey = null
         teardown()
@@ -398,6 +413,42 @@ class MainActivity : Activity(), SyncManager.Listener {
         findViewById<TextView>(R.id.idleName).text = manifest?.displayName ?: getString(R.string.app_name)
         findViewById<TextView>(R.id.idleMessage).text = message
         if (pairingScreen.visibility != View.VISIBLE && setupScreen.visibility != View.VISIBLE) idleScreen.visibility = View.VISIBLE
+    }
+
+    // ------------------------------------------------------------------ capturas de pantalla
+    /** Copia lo que se ve (incluido el video) a una imagen pequeña de 480 px de ancho. */
+    private fun captureScreen(done: (Bitmap?) -> Unit) {
+        val w = root.width
+        val hh = root.height
+        if (w <= 0 || hh <= 0) return done(null)
+        val tw = 480
+        val th = (hh * tw / w).coerceAtLeast(1)
+        val bmp = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+        if (Build.VERSION.SDK_INT >= 26) {
+            try {
+                PixelCopy.request(window, bmp, { result -> done(if (result == PixelCopy.SUCCESS) bmp else null) }, handler)
+            } catch (e: Exception) {
+                done(null)
+            }
+        } else {
+            // Android 7 o anterior: el video puede salir en negro
+            val c = Canvas(bmp)
+            c.scale(tw.toFloat() / w, th.toFloat() / hh)
+            root.draw(c)
+            done(bmp)
+        }
+    }
+
+    private fun sendScreenshot() {
+        captureScreen { bmp ->
+            if (bmp == null) return@captureScreen
+            decoder.execute {
+                val out = ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.JPEG, 72, out)
+                bmp.recycle()
+                sync?.uploadScreenshot(out.toByteArray())
+            }
+        }
     }
 
     // ------------------------------------------------------------------ superposiciones

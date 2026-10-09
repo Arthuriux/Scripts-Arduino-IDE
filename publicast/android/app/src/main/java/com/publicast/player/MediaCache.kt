@@ -11,7 +11,15 @@ import java.io.File
 class MediaCache(context: Context) {
     val dir: File = File(context.filesDir, "media").apply { mkdirs() }
 
-    fun fileFor(name: String): File = File(dir, File(name).name)
+    /**
+     * Archivo local de un contenido. Admite subcarpetas (contenido HTML con sus imágenes, CSS y JS)
+     * sin permitir salir de la carpeta de caché.
+     */
+    fun fileFor(name: String): File {
+        val parts = name.replace('\\', '/').split('/').filter { it.isNotEmpty() && it != "." && it != ".." }
+        if (parts.isEmpty()) return File(dir, "_")
+        return parts.fold(dir) { acc, p -> File(acc, p) }
+    }
 
     fun has(ref: FileRef): Boolean {
         val f = fileFor(ref.file)
@@ -19,7 +27,7 @@ class MediaCache(context: Context) {
     }
 
     fun isPlayable(item: Item): Boolean = when (item.type) {
-        "image", "video" -> item.file != null && fileFor(item.file).exists()
+        "image", "video", "html" -> item.file != null && fileFor(item.file).exists()
         "web" -> !item.url.isNullOrEmpty()
         "text" -> item.text != null
         else -> false
@@ -37,6 +45,7 @@ class MediaCache(context: Context) {
             var ok = false
             for (attempt in 1..3) {
                 try {
+                    fileFor(ref.file).parentFile?.mkdirs()
                     if (api.download(ref.url, fileFor(ref.file), ref.md5)) {
                         ok = true
                         break
@@ -49,8 +58,12 @@ class MediaCache(context: Context) {
         }
         progress(missing.size, missing.size)
         // Limpieza de archivos que ya no pertenecen a ninguna lista
-        val keep = manifest.files.map { it.file }.toSet()
-        dir.listFiles()?.forEach { f -> if (f.name !in keep) f.delete() }
+        val keep = manifest.files.map { fileFor(it.file).absolutePath }.toSet()
+        dir.walkBottomUp().forEach { f ->
+            if (f == dir) return@forEach
+            if (f.isFile && f.absolutePath !in keep) f.delete()
+            if (f.isDirectory && f.list().isNullOrEmpty()) f.delete()
+        }
         return failed
     }
 
