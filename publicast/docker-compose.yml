@@ -1,0 +1,15 @@
+services:
+  publicast:
+    build: ./server
+    container_name: publicast
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: cambie-esta-clave   # sólo se usa la primera vez
+      MAX_UPLOAD_MB: 2048
+    volumes:
+      - publicast-data:/data
+volumes:
+  publicast-data:

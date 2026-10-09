@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PubliCast Player</title>
+  <link rel="stylesheet" href="player.css">
+</head>
+<body>
+  <div id="stage">
+    <div class="layer" id="layer-a"></div>
+    <div class="layer" id="layer-b"></div>
+  </div>
+  <div id="ticker" class="hidden"><div id="ticker-track"></div></div>
+  <div id="announce" class="hidden"><div id="announce-text"></div></div>
+  <div id="overlay" class="hidden"></div>
+  <div id="pairing" class="screen hidden">
+    <div class="screen-box">
+      <div class="logo-big"></div>
+      <h1>PubliCast Player</h1>
+      <p>Introduzca este código en el panel de administración<br>(<b>Pantallas → Autorizar una pantalla nueva</b>)</p>
+      <div id="pair-code" class="code">······</div>
+      <p class="small" id="pair-server"></p>
+    </div>
+  </div>
+  <div id="idle" class="screen hidden">
+    <div class="screen-box">
+      <div class="logo-big"></div>
+      <h1 id="idle-name">PubliCast</h1>
+      <p id="idle-msg">Sin contenido asignado</p>
+    </div>
+  </div>
+  <div id="status" class="hidden"></div>
+  <script src="/shared/schedule.js"></script>
+  <script src="player.js"></script>
+</body>
+</html>

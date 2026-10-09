@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PubliCast CMS</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='22' rx='3' fill='%232563eb'/%3E%3Crect x='12' y='24' width='8' height='6' fill='%231e3a8a'/%3E%3Cpath d='M13 7l8 4-8 4z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form id="login-form" class="login-card">
+      <div class="brand big"><span class="logo"></span>PubliCast</div>
+      <p class="muted">Señalización digital · Panel de administración</p>
+      <label>Usuario<input name="username" autocomplete="username" required value="admin"></label>
+      <label>Contraseña<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary" type="submit">Entrar</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </div>
+
+  <div id="app" class="layout hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="logo"></span>PubliCast</div>
+      <nav id="nav">
+        <a href="#/panel" data-page="panel">📊 Panel</a>
+        <a href="#/pantallas" data-page="pantallas">🖥️ Pantallas</a>
+        <a href="#/biblioteca" data-page="biblioteca">🖼️ Biblioteca</a>
+        <a href="#/listas" data-page="listas">🎞️ Listas de reproducción</a>
+        <a href="#/programacion" data-page="programacion">🗓️ Programación</a>
+        <a href="#/anuncio" data-page="anuncio">📢 Anuncio inmediato</a>
+        <a href="#/estadisticas" data-page="estadisticas">📈 Estadísticas</a>
+        <a href="#/ajustes" data-page="ajustes">⚙️ Ajustes</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="whoami" class="muted"></span>
+        <button id="logout" class="btn ghost small">Salir</button>
+      </div>
+    </aside>
+    <main id="main"></main>
+  </div>
+
+  <div id="modal" class="modal hidden"><div class="modal-card" id="modal-card"></div></div>
+  <div id="toasts" class="toasts"></div>
+  <script src="/shared/schedule.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

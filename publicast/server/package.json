@@ -1,0 +1,21 @@
+{
+  "name": "publicast-server",
+  "version": "1.0.0",
+  "description": "PubliCast CMS - servidor de señalización digital para enviar contenido multimedia a pantallas Android",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.3.0",
+    "multer": "^2.4.0",
+    "ws": "^8.22.0"
+  }
+}
