@@ -741,6 +741,8 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
   // ---------- WebSocket para reproductores ----------
   function attachWebSocket(server) {
     const wss = new WebSocketServer({ server, path: '/ws' });
+    // Los errores del servidor HTTP (p. ej. puerto ocupado) se gestionan en server.on('error')
+    wss.on('error', () => {});
     wss.on('connection', (ws, req) => {
       const url = new URL(req.url, 'http://x');
       const d = displayFromKey(url.searchParams.get('key'));
