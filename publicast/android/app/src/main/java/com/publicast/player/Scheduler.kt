@@ -38,13 +38,17 @@ object Scheduler {
         return (t >= start && dayMatches(s, now)) || (t < end && dayMatches(s, yesterday))
     }
 
-    /** Devuelve los IDs de las listas que deben reproducirse ahora. */
-    fun resolve(schedules: List<Schedule>, defaultPlaylistId: String?, now: Calendar = Calendar.getInstance()): List<String> {
-        val active = schedules.filter { it.playlistId.isNotEmpty() && isActive(it, now) }
+    /**
+     * Devuelve las claves de los contenidos que deben reproducirse ahora
+     * ('p:<id>' = lista de reproducción, 'l:<id>' = layout).
+     */
+    fun resolve(schedules: List<Schedule>, defaultContent: String?, now: Calendar = Calendar.getInstance()): List<String> {
+        val active = schedules.filter { it.content.isNotEmpty() && isActive(it, now) }
         if (active.isNotEmpty()) {
             val top = active.maxOf { it.priority }
-            return active.filter { it.priority == top }.map { it.playlistId }.distinct()
+            return active.filter { it.priority == top }.map { it.content }.distinct()
         }
-        return if (defaultPlaylistId != null) listOf(defaultPlaylistId) else emptyList()
+        if (defaultContent.isNullOrEmpty()) return emptyList()
+        return listOf(if (defaultContent.startsWith("p:") || defaultContent.startsWith("l:")) defaultContent else "p:$defaultContent")
     }
 }

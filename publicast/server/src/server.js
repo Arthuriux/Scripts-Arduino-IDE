@@ -45,6 +45,20 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     log(`Usuario administrador creado: ${username} (cambie la contraseña desde el panel)`);
   }
 
+  // ---------- Migración de datos de versiones anteriores ----------
+  (function migrate() {
+    let next = Math.max(0, ...db.get('displays').map((d) => d.number || 0)) + 1;
+    db.get('displays').forEach((d) => {
+      if (d.defaultContent === undefined) d.defaultContent = d.defaultPlaylistId ? 'p:' + d.defaultPlaylistId : '';
+      if (d.authorized && !d.number) d.number = next++;
+    });
+    db.get('schedules').forEach((s) => {
+      if (!s.content && s.playlistId) s.content = 'p:' + s.playlistId;
+      if (!s.wallIds) s.wallIds = [];
+    });
+    db.save();
+  })();
+
   const app = express();
   app.disable('x-powered-by');
   // Detrás de un proxy inverso (nginx, Traefik...) defina TRUST_PROXY=1 para registrar la IP real.
@@ -94,16 +108,56 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     return (sockets.get(d.id)?.size || 0) > 0 || (d.lastSeen && Date.now() - Date.parse(d.lastSeen) < ONLINE_WINDOW_MS);
   }
 
+  // ---------- Contenidos: 'p:<id>' = lista de reproducción, 'l:<id>' = layout ----------
+  function contentRecord(key) {
+    if (!key || typeof key !== 'string') return null;
+    if (key.startsWith('p:')) return db.find('playlists', key.slice(2));
+    if (key.startsWith('l:')) return db.find('layouts', key.slice(2));
+    return null;
+  }
+  const validContent = (key) => (contentRecord(key) ? key : '');
+  const contentName = (key) => {
+    const r = contentRecord(key);
+    return r ? (key.startsWith('l:') ? '🧩 ' : '') + r.name : '';
+  };
+
+  /** Videowall al que pertenece la pantalla (y su celda). */
+  function wallOf(displayId) {
+    for (const w of db.get('walls')) {
+      const cell = w.cells.find((c) => c.displayId === displayId);
+      if (cell) return { wall: w, cell };
+    }
+    return null;
+  }
+
+  function schedulesFor(d) {
+    const w = wallOf(d.id);
+    return db.get('schedules').filter((s) => {
+      if (s.enabled === false) return false;
+      const dIds = s.displayIds || [];
+      const wIds = s.wallIds || [];
+      if (!dIds.length && !wIds.length) return true;
+      return dIds.includes(d.id) || (w && wIds.includes(w.wall.id));
+    });
+  }
+
+  /** Contenido por defecto: el del videowall (si tiene) o el de la propia pantalla. */
+  function defaultContentFor(d) {
+    const w = wallOf(d.id);
+    return validContent(w?.wall.content) || validContent(d.defaultContent);
+  }
+
   function publicDisplay(d) {
     const { keyHash, ...rest } = d;
-    const sch = db.get('schedules').filter((s) => !s.displayIds?.length || s.displayIds.includes(d.id));
-    const now = PCSchedule.resolve(sch, d.defaultPlaylistId);
+    const now = PCSchedule.resolve(schedulesFor(d), defaultContentFor(d));
+    const w = wallOf(d.id);
     return {
       ...rest,
       online: isOnline(d),
       connected: (sockets.get(d.id)?.size || 0) > 0,
-      nowPlaying: now.playlistIds.map((id) => db.find('playlists', id)?.name).filter(Boolean),
+      nowPlaying: now.keys.map(contentName).filter(Boolean),
       nowSource: now.source,
+      wall: w ? { id: w.wall.id, name: w.wall.name, row: w.cell.row, col: w.cell.col } : null,
     };
   }
 
@@ -178,6 +232,8 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
         pending: displays.filter((d) => !d.authorized).length,
         media: db.get('media').length,
         playlists: db.get('playlists').length,
+        layouts: db.get('layouts').length,
+        walls: db.get('walls').length,
         schedules: db.get('schedules').length,
         plays24h,
         storage,
@@ -285,13 +341,15 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     const patch = {};
     if (req.body.name !== undefined) patch.name = str(req.body.name, 200) || m.name;
     if (req.body.duration !== undefined) patch.duration = num(req.body.duration, m.duration, 0);
+    if (req.body.naturalDuration !== undefined && m.type === 'video') patch.naturalDuration = num(req.body.naturalDuration, 0, 0, 86400 * 7);
     try {
       if (m.type === 'web' || m.type === 'text') Object.assign(patch, widgetFields({ ...m, ...req.body }, m.type));
     } catch (e) {
       return bad(res, e.message);
     }
+    const onlyNatural = Object.keys(patch).length === 1 && patch.naturalDuration !== undefined;
     db.update('media', m.id, patch);
-    changed('media');
+    if (!onlyNatural || m.naturalDuration !== patch.naturalDuration) changed('media');
     res.json(db.find('media', m.id));
   });
 
@@ -309,26 +367,52 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     res.json({ ok: true });
   });
 
+  // ---------- Estilos de cintillo y reloj ----------
+  const FONTS = ['sans', 'condensed', 'light', 'black', 'serif', 'mono', 'casual', 'cursive'];
+  const dec = (v, def, min, max) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n * 10) / 10)) : def;
+  };
+  function tickerFields(t = {}) {
+    return {
+      text: str(t.text, 2000),
+      speed: num(t.speed, 80, 10, 400),
+      bg: str(t.bg, 20) || '#b91c1c',
+      color: str(t.color, 20) || '#ffffff',
+      font: FONTS.includes(t.font) ? t.font : 'sans',
+      size: dec(t.size, 4.4, 1, 30), // altura de la letra en % de la pantalla
+      opacity: num(t.opacity, 100, 0, 100), // opacidad del fondo
+      position: t.position === 'top' ? 'top' : 'bottom',
+      bold: t.bold !== false,
+    };
+  }
+  function clockFields(c = {}) {
+    return {
+      format: c.format === '12' ? '12' : '24',
+      seconds: !!c.seconds,
+      date: c.date !== false,
+      font: FONTS.includes(c.font) ? c.font : 'sans',
+      size: dec(c.size, 8, 1, 50),
+      color: str(c.color, 20) || '#ffffff',
+      bg: str(c.bg, 20) || '#000000',
+      opacity: num(c.opacity, 60, 0, 100),
+      align: ['left', 'center', 'right'].includes(c.align) ? c.align : 'center',
+    };
+  }
+
   // ---------- Listas de reproducción ----------
   function playlistFields(body) {
     const items = (Array.isArray(body.items) ? body.items : [])
       .filter((i) => db.find('media', i.mediaId))
       .slice(0, 500)
       .map((i) => ({ id: i.id || newId(), mediaId: i.mediaId, duration: num(i.duration, null, 0) }));
-    const t = body.ticker || {};
     return {
       name: str(body.name, 200) || 'Lista sin nombre',
       transition: ['fade', 'slide', 'none'].includes(body.transition) ? body.transition : 'fade',
       fit: ['contain', 'cover', 'fill'].includes(body.fit) ? body.fit : 'contain',
       background: str(body.background, 20) || '#000000',
       items,
-      ticker: {
-        enabled: !!t.enabled,
-        text: str(t.text, 2000),
-        speed: num(t.speed, 80, 10, 400),
-        bg: str(t.bg, 20) || '#b91c1c',
-        color: str(t.color, 20) || '#ffffff',
-      },
+      ticker: { enabled: !!body.ticker?.enabled, ...tickerFields(body.ticker) },
     };
   }
 
@@ -356,20 +440,155 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
   app.delete('/api/playlists/:id', requireAdmin, (req, res) => {
     const id = req.params.id;
     if (!db.remove('playlists', id)) return bad(res, 'No encontrado', 404);
-    db.get('schedules')
-      .filter((s) => s.playlistId === id)
-      .forEach((s) => db.remove('schedules', s.id));
-    db.get('displays')
-      .filter((d) => d.defaultPlaylistId === id)
-      .forEach((d) => db.update('displays', d.id, { defaultPlaylistId: null }));
+    removeContentRefs('p:' + id);
+    db.get('layouts').forEach((l) => {
+      if (l.regions.some((r) => r.playlistId === id))
+        db.update('layouts', l.id, { regions: l.regions.map((r) => (r.playlistId === id ? { ...r, playlistId: null } : r)) });
+    });
     changed('playlist');
     res.json({ ok: true });
   });
 
+  /** Quita las referencias a un contenido eliminado (eventos, pantallas y videowalls). */
+  function removeContentRefs(key) {
+    db.get('schedules')
+      .filter((s) => PCSchedule.contentKey(s) === key)
+      .forEach((s) => db.remove('schedules', s.id));
+    db.get('displays')
+      .filter((d) => d.defaultContent === key)
+      .forEach((d) => db.update('displays', d.id, { defaultContent: '', defaultPlaylistId: null }));
+    db.get('walls')
+      .filter((w) => w.content === key)
+      .forEach((w) => db.update('walls', w.id, { content: '' }));
+  }
+
+  // ---------- Layouts (pantalla dividida en zonas) ----------
+  function layoutFields(body) {
+    const regions = (Array.isArray(body.regions) ? body.regions : []).slice(0, 20).map((r, i) => {
+      const type = ['playlist', 'ticker', 'clock'].includes(r.type) ? r.type : 'playlist';
+      const x = dec(r.x, 0, 0, 100);
+      const y = dec(r.y, 0, 0, 100);
+      const region = {
+        id: str(r.id, 30) || newId(),
+        name: str(r.name, 100) || `Zona ${i + 1}`,
+        type,
+        x,
+        y,
+        w: dec(r.w, 100, 1, 100 - x),
+        h: dec(r.h, 100, 1, 100 - y),
+        z: num(r.z, i, 0, 100),
+      };
+      if (type === 'playlist') region.playlistId = db.find('playlists', r.playlistId) ? r.playlistId : null;
+      if (type === 'ticker') region.ticker = tickerFields(r.ticker);
+      if (type === 'clock') region.clock = clockFields(r.clock);
+      return region;
+    });
+    return {
+      name: str(body.name, 200) || 'Layout sin nombre',
+      orientation: body.orientation === 'portrait' ? 'portrait' : 'landscape',
+      background: str(body.background, 20) || '#000000',
+      regions,
+    };
+  }
+
+  app.get('/api/layouts', requireAdmin, (req, res) => res.json(db.get('layouts')));
+  app.post('/api/layouts', requireAdmin, (req, res) => {
+    const l = db.insert('layouts', layoutFields(req.body || {}));
+    changed('layout');
+    res.json(l);
+  });
+  app.put('/api/layouts/:id', requireAdmin, (req, res) => {
+    if (!db.find('layouts', req.params.id)) return bad(res, 'No encontrado', 404);
+    const l = db.update('layouts', req.params.id, layoutFields(req.body || {}));
+    changed('layout');
+    res.json(l);
+  });
+  app.delete('/api/layouts/:id', requireAdmin, (req, res) => {
+    if (!db.remove('layouts', req.params.id)) return bad(res, 'No encontrado', 404);
+    removeContentRefs('l:' + req.params.id);
+    changed('layout');
+    res.json({ ok: true });
+  });
+
+  /** Vista previa de una lista o layout con el mismo formato que el manifiesto. */
+  app.get('/api/preview', requireAdmin, (req, res) => {
+    const key = str(req.query.content, 60);
+    if (!contentRecord(key)) return bad(res, 'No encontrado', 404);
+    const playlists = {};
+    const layouts = {};
+    collectContent(key, playlists, layouts);
+    res.json({ version: 0, display: { name: 'Vista previa' }, defaultContent: key, schedules: [], playlists, layouts, files: [] });
+  });
+
+  // ---------- Videowalls ----------
+  function wallFields(body, id) {
+    const rows = num(body.rows, 1, 1, 8);
+    const cols = num(body.cols, 2, 1, 8);
+    const seen = new Set();
+    const cells = (Array.isArray(body.cells) ? body.cells : [])
+      .map((c) => ({ row: num(c.row, 0, 0, rows - 1), col: num(c.col, 0, 0, cols - 1), displayId: str(c.displayId, 50) }))
+      .filter((c) => c.row < rows && c.col < cols && db.find('displays', c.displayId))
+      .filter((c) => {
+        const k = `${c.row},${c.col}`;
+        if (seen.has(k) || seen.has(c.displayId)) return false;
+        seen.add(k);
+        seen.add(c.displayId);
+        return true;
+      });
+    // Una pantalla sólo puede pertenecer a un videowall
+    db.get('walls').forEach((w) => {
+      if (w.id === id) return;
+      const keep = w.cells.filter((c) => !seen.has(c.displayId));
+      if (keep.length !== w.cells.length) db.update('walls', w.id, { cells: keep });
+    });
+    return { name: str(body.name, 100) || 'Videowall', rows, cols, cells, content: validContent(body.content) };
+  }
+
+  app.get('/api/walls', requireAdmin, (req, res) => res.json(db.get('walls')));
+  app.post('/api/walls', requireAdmin, (req, res) => {
+    const w = db.insert('walls', wallFields(req.body || {}, null));
+    changed('wall');
+    res.json(w);
+  });
+  app.put('/api/walls/:id', requireAdmin, (req, res) => {
+    if (!db.find('walls', req.params.id)) return bad(res, 'No encontrado', 404);
+    const w = db.update('walls', req.params.id, wallFields(req.body || {}, req.params.id));
+    changed('wall');
+    res.json(w);
+  });
+  app.delete('/api/walls/:id', requireAdmin, (req, res) => {
+    if (!db.remove('walls', req.params.id)) return bad(res, 'No encontrado', 404);
+    db.get('schedules').forEach((s) => {
+      if (s.wallIds?.includes(req.params.id)) db.update('schedules', s.id, { wallIds: s.wallIds.filter((x) => x !== req.params.id) });
+    });
+    changed('wall');
+    res.json({ ok: true });
+  });
+
+  /** Muestra en cada pantalla del videowall su posición (1, 2, 3…) como "Identificar" de Windows. */
+  app.post('/api/walls/:id/identify', requireAdmin, (req, res) => {
+    const w = db.find('walls', req.params.id);
+    if (!w) return bad(res, 'No encontrado', 404);
+    let delivered = 0;
+    w.cells.forEach((c) => {
+      const d = db.find('displays', c.displayId);
+      delivered += send(c.displayId, {
+        type: 'identify',
+        number: c.row * w.cols + c.col + 1,
+        name: d?.name || '',
+        detail: `${w.name} · fila ${c.row + 1}, columna ${c.col + 1}`,
+        seconds: num(req.body?.seconds, 15, 3, 120),
+      })
+        ? 1
+        : 0;
+    });
+    res.json({ delivered, total: w.cells.length });
+  });
+
   // ---------- Programación ----------
   function scheduleFields(body) {
-    const playlistId = str(body.playlistId, 50);
-    if (!db.find('playlists', playlistId)) throw new Error('Seleccione una lista de reproducción válida');
+    const content = validContent(str(body.content, 60) || (body.playlistId ? 'p:' + body.playlistId : ''));
+    if (!content) throw new Error('Seleccione una lista de reproducción o un layout válido');
     const startTime = str(body.startTime, 5);
     const endTime = str(body.endTime, 5);
     const startDate = str(body.startDate, 10);
@@ -379,8 +598,10 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     if (startDate && endDate && endDate < startDate) throw new Error('La fecha final es anterior a la inicial');
     return {
       name: str(body.name, 200) || 'Evento',
-      playlistId,
+      content,
+      playlistId: content.startsWith('p:') ? content.slice(2) : null,
       displayIds: (Array.isArray(body.displayIds) ? body.displayIds : []).filter((id) => db.find('displays', id)),
+      wallIds: (Array.isArray(body.wallIds) ? body.wallIds : []).filter((id) => db.find('walls', id)),
       days: (Array.isArray(body.days) ? body.days : []).map(Number).filter((d) => d >= 0 && d <= 6),
       startTime,
       endTime,
@@ -427,12 +648,15 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     const code = str(req.body?.code, 10).replace(/\D/g, '');
     const d = db.get('displays').find((x) => !x.authorized && x.code === code);
     if (!d) return bad(res, 'No hay ninguna pantalla pendiente con ese código', 404);
-    const defaultPlaylistId = db.find('playlists', req.body?.defaultPlaylistId) ? req.body.defaultPlaylistId : d.defaultPlaylistId || null;
+    const defaultContent =
+      validContent(req.body?.defaultContent) || (req.body?.defaultPlaylistId ? validContent('p:' + req.body.defaultPlaylistId) : '') || d.defaultContent || '';
     db.update('displays', d.id, {
       authorized: true,
       code: null,
       name: str(req.body?.name, 100) || d.name,
-      defaultPlaylistId,
+      defaultContent,
+      defaultPlaylistId: defaultContent.startsWith('p:') ? defaultContent.slice(2) : null,
+      number: d.number || nextDisplayNumber(),
     });
     send(d.id, { type: 'authorized' });
     changed('display');
@@ -440,13 +664,20 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     res.json(publicDisplay(db.find('displays', d.id)));
   });
 
+  function nextDisplayNumber() {
+    return Math.max(0, ...db.get('displays').map((x) => x.number || 0)) + 1;
+  }
+
   app.put('/api/displays/:id', requireAdmin, (req, res) => {
     const d = db.find('displays', req.params.id);
     if (!d) return bad(res, 'No encontrado', 404);
     const patch = {};
     if (req.body.name !== undefined) patch.name = str(req.body.name, 100) || d.name;
-    if (req.body.defaultPlaylistId !== undefined)
-      patch.defaultPlaylistId = db.find('playlists', req.body.defaultPlaylistId) ? req.body.defaultPlaylistId : null;
+    if (req.body.defaultContent !== undefined) {
+      patch.defaultContent = validContent(req.body.defaultContent);
+      patch.defaultPlaylistId = patch.defaultContent.startsWith('p:') ? patch.defaultContent.slice(2) : null;
+    }
+    if (req.body.number !== undefined) patch.number = num(req.body.number, d.number, 1, 9999);
     if (req.body.orientation !== undefined)
       patch.orientation = ['auto', 'landscape', 'portrait', 'reverseLandscape', 'reversePortrait'].includes(req.body.orientation)
         ? req.body.orientation
@@ -466,12 +697,16 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     db.get('schedules').forEach((s) => {
       if (s.displayIds?.includes(id)) db.update('schedules', s.id, { displayIds: s.displayIds.filter((x) => x !== id) });
     });
+    db.get('walls').forEach((w) => {
+      if (w.cells.some((c) => c.displayId === id)) db.update('walls', w.id, { cells: w.cells.filter((c) => c.displayId !== id) });
+    });
     res.json({ ok: true });
   });
 
   function commandPayload(body) {
     const type = body.type;
-    if (type === 'reload' || type === 'identify' || type === 'clearAnnouncement') return { type };
+    if (type === 'reload' || type === 'clearAnnouncement') return { type };
+    if (type === 'identify') return { type, seconds: num(body.seconds, 15, 3, 120) };
     if (type === 'announce') {
       const text = str(body.text, 1000);
       if (!text) throw new Error('Escriba el texto del anuncio');
@@ -488,10 +723,32 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     throw new Error('Comando no válido');
   }
 
+  /** Datos que muestra "Identificar": número grande de la pantalla, como en Windows. */
+  function identifyPayload(d, seconds) {
+    const w = wallOf(d.id);
+    return {
+      type: 'identify',
+      number: d.number || 0,
+      name: d.name,
+      detail: w ? `${w.wall.name} · fila ${w.cell.row + 1}, columna ${w.cell.col + 1}` : d.location || '',
+      seconds,
+    };
+  }
+
+  app.post('/api/displays/identify-all', requireAdmin, (req, res) => {
+    const seconds = num(req.body?.seconds, 15, 3, 120);
+    const list = db.get('displays').filter((d) => d.authorized);
+    const delivered = list.reduce((t, d) => t + (send(d.id, identifyPayload(d, seconds)) ? 1 : 0), 0);
+    res.json({ delivered, total: list.length });
+  });
+
   app.post('/api/displays/:id/command', requireAdmin, (req, res) => {
-    if (!db.find('displays', req.params.id)) return bad(res, 'No encontrado', 404);
+    const d = db.find('displays', req.params.id);
+    if (!d) return bad(res, 'No encontrado', 404);
     try {
-      const n = send(req.params.id, commandPayload(req.body || {}));
+      let msg = commandPayload(req.body || {});
+      if (msg.type === 'identify') msg = identifyPayload(d, msg.seconds);
+      const n = send(req.params.id, msg);
       res.json({ delivered: n });
     } catch (e) {
       bad(res, e.message);
@@ -621,7 +878,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
       transition: p.transition,
       fit: p.fit,
       background: p.background,
-      ticker: p.ticker,
+      ticker: { enabled: !!p.ticker?.enabled, ...tickerFields(p.ticker) },
       items: p.items
         .map((it) => {
           const m = db.find('media', it.mediaId);
@@ -634,6 +891,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
             duration: it.duration === null || it.duration === undefined ? m.duration : it.duration,
           };
           if (m.file) Object.assign(item, { file: m.file, url: `/media/${m.file}`, size: m.size, md5: m.md5, mime: m.mime });
+          if (m.type === 'video' && m.naturalDuration) item.naturalDuration = m.naturalDuration;
           if (m.type === 'web') item.url = m.url;
           if (m.type === 'text') item.text = m.text;
           return item;
@@ -642,40 +900,64 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     };
   }
 
+  /** Añade al manifiesto un contenido y todo lo que necesita (listas de las zonas de un layout). */
+  function collectContent(key, playlists, layouts) {
+    const r = contentRecord(key);
+    if (!r) return;
+    if (key.startsWith('p:')) {
+      playlists[r.id] = playlistPayload(r);
+      return;
+    }
+    layouts[r.id] = { id: r.id, name: r.name, orientation: r.orientation, background: r.background, regions: r.regions };
+    r.regions.forEach((reg) => {
+      if (reg.type === 'playlist' && reg.playlistId) {
+        const p = db.find('playlists', reg.playlistId);
+        if (p) playlists[p.id] = playlistPayload(p);
+      }
+    });
+  }
+
   function buildManifest(d) {
-    const schedules = db
-      .get('schedules')
-      .filter((s) => s.enabled !== false && (!s.displayIds?.length || s.displayIds.includes(d.id)))
-      .map(({ id, name, playlistId, days, startTime, endTime, startDate, endDate, priority }) => ({
+    const schedules = schedulesFor(d).map(({ id, name, days, startTime, endTime, startDate, endDate, priority, ...s }) => {
+      const content = PCSchedule.contentKey(s);
+      return {
         id,
         name,
-        playlistId,
+        content,
+        playlistId: content.startsWith('p:') ? content.slice(2) : null, // compatibilidad con la app 1.0
         days,
         startTime,
         endTime,
         startDate,
         endDate,
         priority,
-      }));
-    const ids = new Set(schedules.map((s) => s.playlistId));
-    if (d.defaultPlaylistId) ids.add(d.defaultPlaylistId);
-    const playlists = {};
-    const files = new Map();
-    ids.forEach((id) => {
-      const p = db.find('playlists', id);
-      if (!p) return;
-      playlists[id] = playlistPayload(p);
-      playlists[id].items.forEach((it) => {
-        if (it.file) files.set(it.file, { file: it.file, url: it.url, size: it.size, md5: it.md5 });
-      });
+      };
     });
+    const defaultContent = defaultContentFor(d);
+    const keys = new Set(schedules.map((s) => s.content));
+    if (defaultContent) keys.add(defaultContent);
+    const playlists = {};
+    const layouts = {};
+    keys.forEach((k) => collectContent(k, playlists, layouts));
+    const files = new Map();
+    Object.values(playlists).forEach((p) =>
+      p.items.forEach((it) => {
+        if (it.file) files.set(it.file, { file: it.file, url: it.url, size: it.size, md5: it.md5 });
+      })
+    );
+    const w = wallOf(d.id);
     return {
       version: db.contentVersion,
       serverTime: new Date().toISOString(),
-      display: { id: d.id, name: d.name, orientation: d.orientation || 'auto' },
-      defaultPlaylistId: d.defaultPlaylistId && playlists[d.defaultPlaylistId] ? d.defaultPlaylistId : null,
-      schedules: schedules.filter((s) => playlists[s.playlistId]),
+      display: { id: d.id, name: d.name, number: d.number || 0, orientation: d.orientation || 'auto' },
+      wall: w
+        ? { id: w.wall.id, name: w.wall.name, rows: w.wall.rows, cols: w.wall.cols, row: w.cell.row, col: w.cell.col }
+        : null,
+      defaultContent,
+      defaultPlaylistId: defaultContent.startsWith('p:') ? defaultContent.slice(2) : null,
+      schedules: schedules.filter((s) => contentRecord(s.content)),
       playlists,
+      layouts,
       files: [...files.values()],
       settings: { heartbeatSeconds: HEARTBEAT_SECONDS, statsEnabled: true },
     };

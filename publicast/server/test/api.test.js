@@ -143,6 +143,7 @@ test('resolución de la programación', () => {
   // Fechas
   assert.ok(!PCSchedule.isActive({ ...base, startDate: '2026-10-06' }, at('2026-10-05T09:00:00')));
   // Prioridad e intercalado
+  assert.deepEqual(PCSchedule.resolve([{ id: '9', content: 'l:L', priority: 1 }], 'p:D', at('2026-10-05T09:00:00')).keys, ['l:L']);
   const r = PCSchedule.resolve(
     [
       { id: '1', playlistId: 'A', priority: 1 },
@@ -154,6 +155,68 @@ test('resolución de la programación', () => {
   );
   assert.deepEqual(r.playlistIds, ['B', 'C']);
   assert.deepEqual(PCSchedule.resolve([], 'D').playlistIds, ['D']);
+  assert.deepEqual(PCSchedule.resolve([], 'l:X').keys, ['l:X']);
+});
+
+test('layouts, videowall e identificación', async () => {
+  const lay = await call('POST', '/api/layouts', {
+    name: 'Noticiero',
+    regions: [
+      { type: 'playlist', x: 0, y: 0, w: 75, h: 88, playlistId },
+      { type: 'clock', x: 75, y: 0, w: 40, h: 22, clock: { format: '12', font: 'nope' } },
+      { type: 'ticker', x: 0, y: 88, w: 100, h: 12, ticker: { text: 'Noticias', opacity: 50, font: 'condensed', size: 5 } },
+    ],
+  });
+  assert.equal(lay.status, 200);
+  const [main, clock, ticker] = lay.body.regions;
+  assert.equal(main.playlistId, playlistId);
+  assert.equal(clock.w, 25); // se recorta para no salir de la pantalla
+  assert.equal(clock.clock.format, '12');
+  assert.equal(clock.clock.font, 'sans');
+  assert.equal(ticker.ticker.opacity, 50);
+  assert.equal(ticker.ticker.font, 'condensed');
+
+  const displays = (await call('GET', '/api/displays')).body;
+  const d = displays[0];
+  assert.equal(d.number, 1);
+  const wall = await call('POST', '/api/walls', { name: 'Recepción', rows: 1, cols: 2, content: 'l:' + lay.body.id, cells: [{ row: 0, col: 1, displayId: d.id }] });
+  assert.equal(wall.status, 200);
+  assert.equal(wall.body.cells.length, 1);
+
+  const man = await player('GET', '/api/player/manifest');
+  assert.equal(man.body.wall.cols, 2);
+  assert.equal(man.body.wall.col, 1);
+  assert.equal(man.body.defaultContent, 'l:' + lay.body.id);
+  assert.ok(man.body.layouts[lay.body.id]);
+  assert.ok(man.body.playlists[playlistId]);
+  assert.equal(man.body.display.number, 1);
+
+  const ws = new WebSocket(base.replace('http', 'ws') + '/ws?key=' + KEY);
+  const messages = [];
+  ws.on('message', (m) => messages.push(JSON.parse(m)));
+  await new Promise((r) => ws.on('open', r));
+  const idw = await call('POST', `/api/walls/${wall.body.id}/identify`, {});
+  assert.equal(idw.body.delivered, 1);
+  const ida = await call('POST', '/api/displays/identify-all', {});
+  assert.equal(ida.body.delivered, 1);
+  await new Promise((r) => setTimeout(r, 100));
+  const ids = messages.filter((m) => m.type === 'identify');
+  assert.equal(ids[0].number, 2); // posición en el videowall (fila 1, columna 2)
+  assert.match(ids[0].detail, /Recepción/);
+  assert.equal(ids[1].number, 1); // número de la pantalla
+  ws.close();
+
+  // Programación de un layout dirigida al videowall
+  const ev = await call('POST', '/api/schedules', { name: 'Wall', content: 'l:' + lay.body.id, wallIds: [wall.body.id] });
+  assert.equal(ev.status, 200);
+  const man2 = await player('GET', '/api/player/manifest');
+  assert.ok(man2.body.schedules.some((s) => s.content === 'l:' + lay.body.id));
+
+  // Al borrar el layout se limpian el videowall y sus eventos
+  assert.equal((await call('DELETE', '/api/layouts/' + lay.body.id)).status, 200);
+  const walls = (await call('GET', '/api/walls')).body;
+  assert.equal(walls[0].content, '');
+  assert.ok(!(await call('GET', '/api/schedules')).body.some((s) => s.content === 'l:' + lay.body.id));
 });
 
 test('al eliminar contenido se quita de las listas', async () => {

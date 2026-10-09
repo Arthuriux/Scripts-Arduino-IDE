@@ -1,0 +1,142 @@
+{
+ "version": 6,
+ "serverTime": "2026-10-09T16:57:11.972Z",
+ "display": {
+  "id": "O0f4GO3PLS1W",
+  "name": "TV",
+  "number": 1,
+  "orientation": "auto"
+ },
+ "wall": {
+  "id": "95QADzZHrnMm",
+  "name": "Muro",
+  "rows": 2,
+  "cols": 3,
+  "row": 1,
+  "col": 2
+ },
+ "defaultContent": "l:ENQLGKF7ZYL0",
+ "defaultPlaylistId": null,
+ "schedules": [
+  {
+   "id": "u5T5RurrvvRJ",
+   "name": "E",
+   "content": "p:0R44y0LzOznS",
+   "playlistId": "0R44y0LzOznS",
+   "days": [
+    6
+   ],
+   "startTime": "10:00",
+   "endTime": "12:00",
+   "startDate": "",
+   "endDate": "",
+   "priority": 3
+  }
+ ],
+ "playlists": {
+  "0R44y0LzOznS": {
+   "id": "0R44y0LzOznS",
+   "name": "Promos",
+   "transition": "fade",
+   "fit": "contain",
+   "background": "#000000",
+   "ticker": {
+    "enabled": true,
+    "text": "Noticias",
+    "speed": 80,
+    "bg": "#b91c1c",
+    "color": "#ffffff",
+    "font": "condensed",
+    "size": 5.5,
+    "opacity": 40,
+    "position": "top",
+    "bold": true
+   },
+   "items": [
+    {
+     "id": "8iv9rwrnkQ3Z",
+     "mediaId": "KIE-1Ne-Rl89",
+     "name": "Hola",
+     "type": "text",
+     "duration": 7,
+     "text": {
+      "title": "Hola",
+      "body": "Mundo",
+      "bg": "#112233",
+      "color": "#ffffff",
+      "accent": "#f59e0b",
+      "align": "center"
+     }
+    }
+   ]
+  }
+ },
+ "layouts": {
+  "ENQLGKF7ZYL0": {
+   "id": "ENQLGKF7ZYL0",
+   "name": "L",
+   "orientation": "landscape",
+   "background": "#000000",
+   "regions": [
+    {
+     "id": "_HCAF_NcUbEV",
+     "name": "Zona 1",
+     "type": "playlist",
+     "x": 0,
+     "y": 0,
+     "w": 75,
+     "h": 90,
+     "z": 0,
+     "playlistId": "0R44y0LzOznS"
+    },
+    {
+     "id": "oR4yi6HswIpJ",
+     "name": "Zona 2",
+     "type": "ticker",
+     "x": 0,
+     "y": 90,
+     "w": 100,
+     "h": 10,
+     "z": 1,
+     "ticker": {
+      "text": "Cinta",
+      "speed": 80,
+      "bg": "#b91c1c",
+      "color": "#ffffff",
+      "font": "sans",
+      "size": 4.4,
+      "opacity": 100,
+      "position": "bottom",
+      "bold": true
+     }
+    },
+    {
+     "id": "g3Vo7CG271w-",
+     "name": "Zona 3",
+     "type": "clock",
+     "x": 75,
+     "y": 0,
+     "w": 25,
+     "h": 20,
+     "z": 2,
+     "clock": {
+      "format": "12",
+      "seconds": true,
+      "date": true,
+      "font": "sans",
+      "size": 8,
+      "color": "#ffffff",
+      "bg": "#000000",
+      "opacity": 60,
+      "align": "center"
+     }
+    }
+   ]
+  }
+ },
+ "files": [],
+ "settings": {
+  "heartbeatSeconds": 60,
+  "statsEnabled": true
+ }
+}

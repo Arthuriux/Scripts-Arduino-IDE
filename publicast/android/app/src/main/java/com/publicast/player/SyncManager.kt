@@ -45,6 +45,16 @@ class SyncManager(
     @Volatile var manifest: Manifest? = null
         private set
     @Volatile private var lastError: String = ""
+
+    /** Milisegundos a sumar a la hora local para obtener la del servidor (sincronía de videowall). */
+    @Volatile var clockOffsetMs = 0L
+        private set
+
+    fun serverNow(): Long = System.currentTimeMillis() + clockOffsetMs
+
+    private fun updateClock(serverMs: Long, sentAt: Long, receivedAt: Long) {
+        if (serverMs > 0) clockOffsetMs = serverMs - (sentAt + receivedAt) / 2
+    }
     private val stats = ArrayList<JSONObject>()
 
     fun start() {
@@ -127,8 +137,10 @@ class SyncManager(
 
     private fun doSync() {
         try {
+            val sentAt = System.currentTimeMillis()
             val raw = api.manifest()
             val m = Manifest.parse(raw)
+            updateClock(m.serverTimeMs, sentAt, System.currentTimeMillis())
             val firstRun = manifest == null
             val failed = cache.sync(api, m) { done, total ->
                 if (total > 0) main.post { listener.onStatus("Descargando contenido $done/$total…") }
@@ -186,6 +198,7 @@ class SyncManager(
         if (!authorized) return
         try {
             val current = listener.currentItem()
+            val sentAt = System.currentTimeMillis()
             val r = api.heartbeat(
                 JSONObject()
                     .put("currentItem", current?.name ?: "")
@@ -195,6 +208,7 @@ class SyncManager(
                     .put("error", lastError)
                     .put("info", deviceInfo())
             )
+            updateClock(Manifest.parseIso(r.optString("serverTime")), sentAt, System.currentTimeMillis())
             if (r.optLong("version") != m.version) requestSync()
             main.post { if (!syncing) listener.onStatus(null) }
             flushStats()

@@ -7,13 +7,11 @@
   <link rel="stylesheet" href="player.css">
 </head>
 <body>
-  <div id="stage">
-    <div class="layer" id="layer-a"></div>
-    <div class="layer" id="layer-b"></div>
-  </div>
-  <div id="ticker" class="hidden"><div id="ticker-track"></div></div>
+  <div id="stage"><div id="canvas"></div></div>
   <div id="announce" class="hidden"><div id="announce-text"></div></div>
-  <div id="overlay" class="hidden"></div>
+  <div id="identify" class="hidden">
+    <div class="id-box"><div id="id-number">1</div><div id="id-name"></div><div id="id-detail"></div></div>
+  </div>
   <div id="pairing" class="screen hidden">
     <div class="screen-box">
       <div class="logo-big"></div>
@@ -32,6 +30,7 @@
   </div>
   <div id="status" class="hidden"></div>
   <script src="/shared/schedule.js"></script>
+  <script src="/shared/widgets.js"></script>
   <script src="player.js"></script>
 </body>
 </html>

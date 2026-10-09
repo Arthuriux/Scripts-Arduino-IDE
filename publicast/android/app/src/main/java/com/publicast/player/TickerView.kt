@@ -3,43 +3,36 @@ package com.publicast.player
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.View
 
-/** Cintillo de texto en movimiento continuo con velocidad configurable. */
+/** Cintillo de texto en movimiento continuo: velocidad, tipo de letra, tamaño, colores y opacidad. */
 class TickerView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var text = ""
     private var textWidth = 0f
-    private var offset = 0f
+    private var offset = Float.NaN
     private var speedPx = 80f
     private var lastFrame = 0L
 
-    fun configure(message: String, speedDp: Int, bg: Int, color: Int) {
-        text = "$message     •     "
-        speedPx = speedDp * resources.displayMetrics.density
-        setBackgroundColor(bg)
-        paint.color = color
-        if (height > 0) paint.textSize = height * 0.55f
+    /** @param textPx tamaño de la letra en píxeles */
+    fun configure(style: TickerStyle, textPx: Float) {
+        text = "${style.text}     •     "
+        speedPx = style.speed * resources.displayMetrics.density
+        setBackgroundColor(Manifest.withOpacity(style.bg, style.opacity))
+        paint.color = style.color
+        paint.typeface = Fonts.typeface(style.font, style.bold)
+        paint.textSize = textPx
         textWidth = paint.measureText(text)
-        offset = width.toFloat()
+        offset = Float.NaN
         lastFrame = 0L
-        requestLayout()
         invalidate()
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        paint.textSize = h * 0.55f
-        textWidth = paint.measureText(text)
-        if (offset == 0f) offset = w.toFloat()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (text.isEmpty() || visibility != VISIBLE) return
-        if (textWidth == 0f) textWidth = paint.measureText(text)
+        if (text.isEmpty() || textWidth <= 0f) return
+        if (offset.isNaN()) offset = width.toFloat()
         val now = System.nanoTime()
         if (lastFrame != 0L) offset -= speedPx * ((now - lastFrame) / 1_000_000_000f)
         lastFrame = now

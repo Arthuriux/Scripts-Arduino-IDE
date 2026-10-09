@@ -19,7 +19,7 @@ class SchedulerTest {
         startDate: String = "",
         endDate: String = "",
         priority: Int = 1,
-    ) = Schedule("id-$playlistId-$priority", playlistId, days, start, end, startDate, endDate, priority)
+    ) = Schedule("id-$playlistId-$priority", if (playlistId.contains(':')) playlistId else "p:$playlistId", days, start, end, startDate, endDate, priority)
 
     @Test
     fun franjaDiurna() {
@@ -50,8 +50,9 @@ class SchedulerTest {
             "D",
             at(2026, 10, 5, 9),
         )
-        assertEquals(listOf("B", "C"), r)
-        assertEquals(listOf("D"), Scheduler.resolve(emptyList(), "D", at(2026, 10, 5, 9)))
+        assertEquals(listOf("p:B", "p:C"), r)
+        assertEquals(listOf("p:D"), Scheduler.resolve(emptyList(), "D", at(2026, 10, 5, 9)))
+        assertEquals(listOf("l:L"), Scheduler.resolve(listOf(sch("l:L")), "p:D", at(2026, 10, 5, 9)))
         assertEquals(emptyList<String>(), Scheduler.resolve(emptyList(), null, at(2026, 10, 5, 9)))
     }
 

@@ -11,8 +11,8 @@ android {
         applicationId = "com.publicast.player"
         minSdk = 21          // Android 5.0+: cubre la mayoría de TV Box y tablets
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.1.0"
     }
 
     buildTypes {
@@ -28,6 +28,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true // android.graphics.Color devuelve 0 en las pruebas JVM
+    }
     kotlinOptions {
         jvmTarget = "17"
     }
@@ -39,4 +42,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
+    // org.json real (en las pruebas JVM el de Android es sólo un esqueleto)
+    testImplementation("org.json:json:20240303")
 }

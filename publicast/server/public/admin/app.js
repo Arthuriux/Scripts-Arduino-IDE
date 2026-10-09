@@ -135,6 +135,75 @@ function playlistOptions(playlists, selected, emptyLabel = '— Ninguna —') {
   return [h('option', { value: '' }, emptyLabel), ...playlists.map((p) => h('option', { value: p.id, selected: p.id === selected }, p.name))];
 }
 
+/** Catálogo de contenidos que se pueden asignar: listas y layouts. */
+async function loadCatalog() {
+  const [playlists, layouts, media] = await Promise.all([api('GET', '/api/playlists'), api('GET', '/api/layouts'), api('GET', '/api/media')]);
+  return { playlists, layouts, media, byId: new Map(media.map((m) => [m.id, m])) };
+}
+
+/** <option> para elegir una lista ('p:id') o un layout ('l:id'). */
+function contentOptions(cat, selected, emptyLabel = '— Ninguno —') {
+  return [
+    emptyLabel === null ? null : h('option', { value: '' }, emptyLabel),
+    cat.playlists.length ? h('optgroup', { label: 'Listas de reproducción' }, cat.playlists.map((p) => h('option', { value: 'p:' + p.id, selected: 'p:' + p.id === selected }, p.name))) : null,
+    cat.layouts.length ? h('optgroup', { label: 'Layouts (pantalla dividida)' }, cat.layouts.map((l) => h('option', { value: 'l:' + l.id, selected: 'l:' + l.id === selected }, '🧩 ' + l.name))) : null,
+  ];
+}
+
+function contentRecord(key, cat) {
+  if (!key) return null;
+  if (key.startsWith('p:')) return cat.playlists.find((p) => p.id === key.slice(2)) || null;
+  if (key.startsWith('l:')) return cat.layouts.find((l) => l.id === key.slice(2)) || null;
+  return null;
+}
+function contentLabel(key, cat) {
+  const r = contentRecord(key, cat);
+  if (!r) return key ? '(eliminado)' : '—';
+  return (key.startsWith('l:') ? '🧩 ' : '') + r.name;
+}
+
+/** Miniatura de una lista (su primer contenido visual) o de un layout (sus zonas dibujadas). */
+function playlistThumb(p, cat, cls = 'cthumb') {
+  const m = p && p.items.map((i) => cat.byId.get(i.mediaId)).find((x) => x && (x.type === 'image' || x.type === 'video' || x.type === 'text'))
+    || (p && cat.byId.get(p.items[0]?.mediaId));
+  const el = h('div', { class: cls, style: { background: p?.background || '#000' } });
+  if (!m) el.append(h('span', null, '🎞️'));
+  else if (m.type === 'image') el.append(h('img', { src: m.url, loading: 'lazy', alt: '' }));
+  else if (m.type === 'video') el.append(h('video', { src: m.url + '#t=1', muted: true, preload: 'metadata' }));
+  else if (m.type === 'text') el.append(h('div', { class: 'ttext', style: { background: m.text?.bg, color: m.text?.accent } }, m.text?.title || 'Aa'));
+  else el.append(h('span', null, TYPE_ICON[m.type] || '❔'));
+  return el;
+}
+function contentThumb(key, cat) {
+  const r = contentRecord(key, cat);
+  if (!r) return h('div', { class: 'cthumb' }, h('span', null, '—'));
+  if (key.startsWith('p:')) return playlistThumb(r, cat);
+  const box = h('div', { class: 'cthumb layout' + (r.orientation === 'portrait' ? ' portrait' : ''), style: { background: r.background } });
+  r.regions
+    .slice()
+    .sort((a, b) => a.z - b.z)
+    .forEach((reg) => {
+      const cell = h('div', { class: 'creg', style: { left: reg.x + '%', top: reg.y + '%', width: reg.w + '%', height: reg.h + '%' } });
+      if (reg.type === 'playlist') cell.append(playlistThumb(cat.playlists.find((p) => p.id === reg.playlistId), cat, 'cfill'));
+      else cell.append(h('div', { class: 'cfill widget', style: { background: PCWidgets.rgba((reg.ticker || reg.clock)?.bg, Math.max(40, (reg.ticker || reg.clock)?.opacity ?? 100)) } }, reg.type === 'clock' ? '🕒' : '📰'));
+      box.append(cell);
+    });
+  return box;
+}
+
+function previewContent(key, title, portrait) {
+  modal(
+    h(
+      'div',
+      null,
+      h('h2', null, 'Vista previa: ' + title),
+      h('iframe', { class: 'preview-frame' + (portrait ? ' portrait' : ''), src: '/player/?preview=' + encodeURIComponent(key) }),
+      h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: closeModal }, 'Cerrar'))
+    ),
+    { wide: true }
+  );
+}
+
 function thumbFor(m, cls = 'thumb') {
   if (m.type === 'image') return h('div', { class: cls }, h('img', { src: m.url, loading: 'lazy', alt: '' }), cls === 'thumb' ? h('span', { class: 'type' }, 'Imagen') : null);
   if (m.type === 'video')
@@ -212,6 +281,8 @@ pages.panel = async (main) => {
         kpi(c.pending, 'Pendientes de autorizar'),
         kpi(c.media, 'Contenidos'),
         kpi(c.playlists, 'Listas'),
+        kpi(c.layouts, 'Layouts'),
+        kpi(c.walls, 'Videowalls'),
         kpi(c.schedules, 'Eventos programados'),
         kpi(c.plays24h, 'Reproducciones (24 h)'),
         kpi(fmtBytes(c.storage), 'Almacenamiento')
@@ -230,7 +301,8 @@ pages.panel = async (main) => {
               h('li', null, 'Instale la app PubliCast Player en el dispositivo Android e indique la dirección de este servidor: ', h('code', null, location.origin)),
               h('li', null, 'Introduzca en ', h('a', { href: '#/pantallas' }, 'Pantallas'), ' el código de 6 dígitos que aparece en el dispositivo.'),
               h('li', null, 'Opcional: programe horarios en ', h('a', { href: '#/programacion' }, 'Programación'), '.')
-            )
+            ),
+            h('p', null, 'Consulte la guía completa en ', h('a', { href: '#/ayuda' }, '❓ Cómo usar'), '.')
           )
         : null
     );
@@ -261,7 +333,13 @@ function displaysTable(list, compact, onEdit) {
           h(
             'tr',
             null,
-            h('td', null, h('b', null, d.name), d.location ? h('div', { class: 'muted' }, d.location) : null),
+            h(
+              'td',
+              null,
+              h('div', { class: 'dname' }, d.number ? h('span', { class: 'dnum', title: 'Número de pantalla (Identificar)' }, d.number) : null, h('b', null, d.name)),
+              d.location ? h('div', { class: 'muted' }, d.location) : null,
+              d.wall ? h('div', { class: 'muted' }, `🧱 ${d.wall.name} · fila ${d.wall.row + 1}, col. ${d.wall.col + 1}`) : null
+            ),
             h('td', null, statusBadge(d)),
             h(
               'td',
@@ -282,10 +360,15 @@ function displaysTable(list, compact, onEdit) {
 // ---------------------------------------------------------------- Pantallas
 pages.pantallas = async (main) => {
   const render = async () => {
-    const [displays, playlists] = await Promise.all([api('GET', '/api/displays'), api('GET', '/api/playlists')]);
+    const [displays, cat] = await Promise.all([api('GET', '/api/displays'), loadCatalog()]);
     const pending = displays.filter((d) => !d.authorized);
     mount(main, 
-      pageHead('Pantallas', 'Dispositivos Android que reproducen su contenido'),
+      pageHead(
+        'Pantallas',
+        'Dispositivos Android que reproducen su contenido',
+        h('button', { class: 'btn', title: 'Cada pantalla muestra su número en grande, como en Windows', onclick: identifyAll }, '🔢 Identificar todas'),
+        h('a', { class: 'btn', href: '#/videowall' }, '🧱 Videowall')
+      ),
       h(
         'div',
         { class: 'grid cols-2' },
@@ -294,7 +377,7 @@ pages.pantallas = async (main) => {
           { class: 'card' },
           h('h2', null, 'Autorizar una pantalla nueva'),
           h('p', { class: 'muted' }, 'Abra PubliCast Player en el dispositivo, escriba la dirección del servidor y se mostrará un código de 6 dígitos.'),
-          authorizeForm(playlists, pending, render)
+          authorizeForm(cat, pending, render)
         ),
         h(
           'div',
@@ -314,8 +397,8 @@ pages.pantallas = async (main) => {
           h(
             'div',
             { class: 'actions' },
-            d.authorized ? h('button', { class: 'btn small', onclick: () => editDisplay(d, playlists, render) }, 'Editar') : null,
-            d.authorized ? h('button', { class: 'btn small', title: 'Muestra el nombre en la pantalla', onclick: () => command(d, { type: 'identify' }) }, 'Identificar') : null,
+            d.authorized ? h('button', { class: 'btn small', onclick: () => editDisplay(d, cat, render) }, 'Editar') : null,
+            d.authorized ? h('button', { class: 'btn small', title: 'Muestra el número y el nombre en la pantalla', onclick: () => command(d, { type: 'identify' }) }, 'Identificar') : null,
             d.authorized ? h('button', { class: 'btn small', onclick: () => command(d, { type: 'reload' }) }, 'Recargar') : null,
             h(
               'button',
@@ -340,12 +423,19 @@ pages.pantallas = async (main) => {
   }, 10000);
 };
 
-function authorizeForm(playlists, pending, after) {
+async function identifyAll() {
+  await guard(async () => {
+    const r = await api('POST', '/api/displays/identify-all', { seconds: 15 });
+    toast(`Mostrando el número en ${r.delivered} de ${r.total} pantalla(s)`, !r.delivered);
+  });
+}
+
+function authorizeForm(cat, pending, after) {
   const form = h(
     'form',
     { class: 'form' },
     field('Código mostrado en la pantalla', h('input', { name: 'code', class: 'code-input', inputmode: 'numeric', maxlength: 6, placeholder: '000000', required: true, autocomplete: 'off' })),
-    h('div', { class: 'row' }, field('Nombre', h('input', { name: 'name', placeholder: 'Ej. Vitrina entrada' })), field('Lista por defecto', h('select', { name: 'defaultPlaylistId' }, playlistOptions(playlists)))),
+    h('div', { class: 'row' }, field('Nombre', h('input', { name: 'name', placeholder: 'Ej. Vitrina entrada' })), field('Contenido por defecto', h('select', { name: 'defaultContent' }, contentOptions(cat)))),
     h('button', { class: 'btn primary', type: 'submit' }, 'Autorizar pantalla'),
     pending.length ? h('p', { class: 'muted' }, 'Pendientes ahora: ', pending.map((p) => `${p.code} (${p.name})`).join(', ')) : null
   );
@@ -367,14 +457,14 @@ async function command(d, payload) {
   });
 }
 
-function editDisplay(d, playlists, after) {
+function editDisplay(d, cat, after) {
   const form = h(
     'form',
     { class: 'form' },
     h('h2', null, 'Editar pantalla'),
-    field('Nombre', h('input', { name: 'name', value: d.name, required: true })),
+    h('div', { class: 'row' }, field('Nombre', h('input', { name: 'name', value: d.name, required: true })), h('div', { class: 'shrink' }, field('Número', h('input', { name: 'number', type: 'number', min: 1, value: d.number || '', style: { width: '90px' } })))),
     field('Ubicación', h('input', { name: 'location', value: d.location || '', placeholder: 'Ej. Sucursal centro, planta baja' })),
-    field('Lista de reproducción por defecto', h('select', { name: 'defaultPlaylistId' }, playlistOptions(playlists, d.defaultPlaylistId)), 'Se reproduce cuando no hay ningún evento programado activo.'),
+    field('Contenido por defecto', h('select', { name: 'defaultContent' }, contentOptions(cat, d.defaultContent)), d.wall ? 'Esta pantalla forma parte de un videowall: si el videowall tiene contenido, se usa ése.' : 'Se reproduce cuando no hay ningún evento programado activo.'),
     field(
       'Orientación',
       h(
@@ -497,16 +587,24 @@ pages.biblioteca = async (main) => {
 };
 
 function mediaCard(m, reload) {
+  const thumb = thumbFor(m);
+  // Guarda la duración real del video (necesaria para sincronizar videowalls)
+  const v = thumb.querySelector('video');
+  if (v && !m.naturalDuration)
+    v.addEventListener('loadedmetadata', () => {
+      if (Number.isFinite(v.duration) && v.duration > 0) api('PUT', '/api/media/' + m.id, { naturalDuration: Math.round(v.duration) }).catch(() => {});
+    });
   const dur = h('input', { type: 'number', min: 0, value: m.duration, style: { width: '80px' }, title: m.type === 'video' ? '0 = duración completa del video' : 'Segundos en pantalla' });
   dur.addEventListener('change', () => guard(() => api('PUT', '/api/media/' + m.id, { duration: dur.value }).then(() => toast('Duración guardada'))));
   return h(
     'div',
     { class: 'media-card' },
-    thumbFor(m),
+    thumb,
     h(
       'div',
       { class: 'meta' },
       h('div', { class: 'name', title: m.name }, m.name),
+      m.naturalDuration ? h('div', { class: 'muted' }, 'Duración del video: ' + fmtDur(m.naturalDuration)) : null,
       h('div', { class: 'muted' }, [TYPE_LABEL[m.type], m.size ? fmtBytes(m.size) : m.url, m.usedIn ? `en ${m.usedIn} lista(s)` : 'sin usar'].filter(Boolean).join(' · ')),
       h('div', { class: 'row' }, h('label', { class: 'shrink' }, 'Duración (s)', dur)),
       h(
@@ -633,7 +731,7 @@ pages.listas = async (main) => {
                     h('td', null, h('a', { href: '#/listas/' + p.id }, h('b', null, p.name)), p.ticker?.enabled ? h('span', { class: 'badge blue', style: { marginLeft: '8px' } }, 'cintillo') : null),
                     h('td', null, p.items.length),
                     h('td', null, fmtDur(totalDur(p)), p.items.some((i) => byId.get(i.mediaId)?.type === 'video' && !Number(i.duration ?? byId.get(i.mediaId)?.duration)) ? ' + videos' : ''),
-                    h('td', { class: 'muted' }, `${displays.filter((d) => d.defaultPlaylistId === p.id).length} pantalla(s) · ${schedules.filter((s) => s.playlistId === p.id).length} evento(s)`),
+                    h('td', { class: 'muted' }, `${displays.filter((d) => d.defaultContent === 'p:' + p.id).length} pantalla(s) · ${schedules.filter((s) => PCSchedule.contentKey(s) === 'p:' + p.id).length} evento(s)`),
                     h('td', { class: 'muted' }, fmtDate(p.updatedAt)),
                     h(
                       'td',
@@ -668,7 +766,7 @@ pages.listas = async (main) => {
 };
 
 function previewPlaylist(p) {
-  modal(h('div', null, h('h2', null, 'Vista previa: ' + p.name), h('iframe', { class: 'preview-frame', src: '/player/?preview=' + encodeURIComponent(p.id) }), h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: closeModal }, 'Cerrar'))), { wide: true });
+  previewContent('p:' + p.id, p.name);
 }
 
 function playlistEditor(main, p, media, byId) {
@@ -677,7 +775,7 @@ function playlistEditor(main, p, media, byId) {
     transition: p?.transition || 'fade',
     fit: p?.fit || 'contain',
     background: p?.background || '#000000',
-    ticker: { enabled: false, text: '', speed: 80, bg: '#b91c1c', color: '#ffffff', ...(p?.ticker || {}) },
+    ticker: { ...TICKER_DEFAULTS, enabled: false, ...(p?.ticker || {}) },
     items: (p?.items || []).map((i) => ({ ...i })),
   };
   const list = h('div', { class: 'items' });
@@ -813,110 +911,265 @@ function playlistEditor(main, p, media, byId) {
       )
     ),
     h('div', { class: 'card' }, h('div', { class: 'page-head' }, h('div', null, h('h2', null, 'Contenidos'), summary), h('button', { class: 'btn primary', onclick: picker }, '+ Añadir contenidos')), list),
-    h(
-      'div',
-      { class: 'card form' },
-      h('h2', null, 'Cintillo de noticias (texto en movimiento)'),
-      h('div', { class: 'checks' }, h('label', null, bind(h('input', { type: 'checkbox', checked: state.ticker.enabled }), (v) => (state.ticker.enabled = v)), 'Mostrar un cintillo en la parte inferior de la pantalla')),
-      field('Texto', bind(h('textarea', { placeholder: 'Bienvenidos · Horario de 9 a 21 h · Siga nuestras redes @mitienda' }, state.ticker.text), (v) => (state.ticker.text = v)), 'Separe los mensajes con " · ". Se repite continuamente.'),
-      h(
-        'div',
-        { class: 'row' },
-        field('Velocidad (px/s)', bind(h('input', { type: 'number', min: 10, max: 400, value: state.ticker.speed }), (v) => (state.ticker.speed = Number(v)))),
-        field('Fondo', bind(h('input', { type: 'color', value: state.ticker.bg }), (v) => (state.ticker.bg = v))),
-        field('Color del texto', bind(h('input', { type: 'color', value: state.ticker.color }), (v) => (state.ticker.color = v)))
-      )
-    )
+    h('div', { class: 'card form' }, h('h2', null, 'Cintillo de noticias (texto en movimiento)'), tickerEditor(state.ticker, { toggle: true }))
   );
   renderItems();
 }
 
-// ---------------------------------------------------------------- Programación
-pages.programacion = async (main) => {
-  const [schedules, playlists, displays] = await Promise.all([api('GET', '/api/schedules'), api('GET', '/api/playlists'), api('GET', '/api/displays')]);
-  const pName = (id) => playlists.find((p) => p.id === id)?.name || '(eliminada)';
-  const dNames = (ids) => (ids?.length ? ids.map((id) => displays.find((d) => d.id === id)?.name || '?').join(', ') : 'Todas las pantallas');
-  const describe = (s) => {
-    const days = s.days?.length && s.days.length < 7 ? s.days.slice().sort().map((d) => DAYS[d]).join(', ') : 'Todos los días';
-    const hours = s.startTime || s.endTime ? `${s.startTime || '00:00'}–${s.endTime || '24:00'}` : 'Todo el día';
-    const dates = s.startDate || s.endDate ? `del ${s.startDate || '…'} al ${s.endDate || '…'}` : '';
-    return [days, hours, dates].filter(Boolean).join(' · ');
+// ---------------------------------------------------------------- Cintillo y reloj (editores reutilizables)
+const TICKER_DEFAULTS = { text: '', speed: 80, bg: '#b91c1c', color: '#ffffff', font: 'sans', size: 4.4, opacity: 100, position: 'bottom', bold: true };
+const CLOCK_DEFAULTS = { format: '24', seconds: false, date: true, font: 'sans', size: 8, color: '#ffffff', bg: '#000000', opacity: 60, align: 'center' };
+const fontOptions = (sel) => Object.entries(PCWidgets.FONTS).map(([k, f]) => h('option', { value: k, selected: k === sel }, f.label));
+
+/** Escala de la vista previa: el tamaño se expresa en % del alto de la pantalla. */
+function previewBox(portrait) {
+  return h('div', { class: 'wpreview' + (portrait ? ' portrait' : '') });
+}
+
+function bindObj(obj, key, input, onChange, parse = (v) => v) {
+  const ev = input.tagName === 'SELECT' || input.type === 'checkbox' ? 'change' : 'input';
+  input.addEventListener(ev, () => {
+    obj[key] = input.type === 'checkbox' ? input.checked : parse(input.value);
+    onChange();
+  });
+  return input;
+}
+
+/** Editor del cintillo: texto, velocidad, tipo de letra, tamaño, colores, transparencia y posición. */
+function tickerEditor(t, { toggle = false, fill = false } = {}) {
+  Object.keys(TICKER_DEFAULTS).forEach((k) => t[k] === undefined && (t[k] = TICKER_DEFAULTS[k]));
+  const preview = previewBox();
+  const draw = () => {
+    preview.replaceChildren();
+    preview.append(h('div', { class: 'wp-content' }, 'Contenido'));
+    if (!toggle || t.enabled) {
+      if (t.text) PCWidgets.makeTicker(preview, t, fill, 'cqh');
+      else preview.append(h('div', { class: 'wp-hint' }, 'Escriba el texto del cintillo'));
+    }
   };
-  mount(main, 
-    pageHead('Programación', 'Qué lista se reproduce, cuándo y en qué pantallas', h('button', { class: 'btn primary', disabled: !playlists.length, onclick: () => scheduleEditor(null, playlists, displays) }, '+ Nuevo evento')),
-    !playlists.length ? h('div', { class: 'card empty' }, 'Primero cree una lista de reproducción.') : null,
+  const B = (key, input, parse) => bindObj(t, key, input, draw, parse);
+  const el = h(
+    'div',
+    { class: 'form' },
+    toggle ? h('div', { class: 'checks' }, h('label', null, B('enabled', h('input', { type: 'checkbox', checked: t.enabled })), 'Mostrar el cintillo')) : null,
+    field('Texto', B('text', h('textarea', { placeholder: 'Bienvenidos · Horario de 9 a 21 h · Siga nuestras redes @mitienda' }, t.text)), 'Separe los mensajes con " · ". Se repite continuamente.'),
+    h(
+      'div',
+      { class: 'row' },
+      field('Tipo de letra', B('font', h('select', null, fontOptions(t.font)))),
+      field('Tamaño de letra (% del alto)', B('size', h('input', { type: 'number', min: 1, max: 30, step: 0.2, value: t.size }), Number)),
+      field('Velocidad (px/s)', B('speed', h('input', { type: 'number', min: 10, max: 400, value: t.speed }), Number)),
+      fill ? null : field('Posición', B('position', h('select', null, h('option', { value: 'bottom', selected: t.position !== 'top' }, 'Abajo'), h('option', { value: 'top', selected: t.position === 'top' }, 'Arriba'))))
+    ),
+    h(
+      'div',
+      { class: 'row' },
+      field('Color del texto', B('color', h('input', { type: 'color', value: t.color }))),
+      field('Color de fondo', B('bg', h('input', { type: 'color', value: t.bg }))),
+      field('Opacidad del fondo', h('div', { class: 'range' }, B('opacity', h('input', { type: 'range', min: 0, max: 100, value: t.opacity }), Number), h('span', { class: 'muted' }, '0 = transparente'))),
+      h('div', { class: 'checks shrink' }, h('label', null, B('bold', h('input', { type: 'checkbox', checked: t.bold !== false })), 'Negrita'))
+    ),
+    h('div', null, h('b', null, 'Vista previa'), preview)
+  );
+  draw();
+  return el;
+}
+
+/** Editor del reloj con fecha. */
+function clockEditor(c) {
+  Object.keys(CLOCK_DEFAULTS).forEach((k) => c[k] === undefined && (c[k] = CLOCK_DEFAULTS[k]));
+  const preview = previewBox();
+  let widget = null;
+  const draw = () => {
+    widget?.stop();
+    preview.replaceChildren();
+    widget = PCWidgets.makeClock(preview, c, () => new Date(), 'cqh');
+  };
+  const B = (key, input, parse) => bindObj(c, key, input, draw, parse);
+  const el = h(
+    'div',
+    { class: 'form' },
+    h(
+      'div',
+      { class: 'row' },
+      field('Formato', B('format', h('select', null, h('option', { value: '24', selected: c.format !== '12' }, '24 horas (18:30)'), h('option', { value: '12', selected: c.format === '12' }, '12 horas (6:30 p. m.)')))),
+      field('Tipo de letra', B('font', h('select', null, fontOptions(c.font)))),
+      field('Tamaño (% del alto)', B('size', h('input', { type: 'number', min: 1, max: 50, step: 0.5, value: c.size }), Number)),
+      field('Alineación', B('align', h('select', null, [['center', 'Centro'], ['left', 'Izquierda'], ['right', 'Derecha']].map(([v, l]) => h('option', { value: v, selected: c.align === v }, l)))))
+    ),
+    h(
+      'div',
+      { class: 'row' },
+      field('Color', B('color', h('input', { type: 'color', value: c.color }))),
+      field('Fondo', B('bg', h('input', { type: 'color', value: c.bg }))),
+      field('Opacidad del fondo', B('opacity', h('input', { type: 'range', min: 0, max: 100, value: c.opacity }), Number)),
+      h('div', { class: 'checks shrink' }, h('label', null, B('date', h('input', { type: 'checkbox', checked: c.date !== false })), 'Mostrar fecha'), h('label', null, B('seconds', h('input', { type: 'checkbox', checked: !!c.seconds })), 'Segundos'))
+    ),
+    h('div', null, h('b', null, 'Vista previa'), preview)
+  );
+  draw();
+  return el;
+}
+
+// ---------------------------------------------------------------- Programación
+const DAY_FULL = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+const fmtYMD = (v) => (v ? new Date(v + 'T00:00:00').toLocaleDateString('es', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
+
+function describeDays(s) {
+  return s.days?.length && s.days.length < 7 ? s.days.slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map((d) => DAYS[d]).join(', ') : 'Todos los días';
+}
+function describeHours(s) {
+  return s.startTime || s.endTime ? `${s.startTime || '00:00'} – ${s.endTime || '24:00'}` : 'Todo el día';
+}
+function describeDates(s) {
+  if (!s.startDate && !s.endDate) return 'Siempre';
+  if (s.startDate && s.endDate) return `${fmtYMD(s.startDate)} → ${fmtYMD(s.endDate)}`;
+  return s.startDate ? `Desde ${fmtYMD(s.startDate)}` : `Hasta ${fmtYMD(s.endDate)}`;
+}
+
+pages.programacion = async (main) => {
+  const [schedules, cat, displays, walls] = await Promise.all([api('GET', '/api/schedules'), loadCatalog(), api('GET', '/api/displays'), api('GET', '/api/walls')]);
+  const targets = (s) => {
+    const names = [...(s.displayIds || []).map((id) => displays.find((d) => d.id === id)?.name || '?'), ...(s.wallIds || []).map((id) => '🧱 ' + (walls.find((w) => w.id === id)?.name || '?'))];
+    return names.length ? names.join(', ') : 'Todas las pantallas';
+  };
+  const hasContent = cat.playlists.length || cat.layouts.length;
+  const now = new Date();
+  const clock = h('div', { class: 'now-clock' });
+  const tick = () => {
+    const d = new Date();
+    clock.replaceChildren(h('b', null, PCWidgets.formatTime(d, { format: '24', seconds: true })), h('span', null, PCWidgets.formatDate(d)));
+  };
+  tick();
+  refreshTimer = setInterval(tick, 1000);
+  const sorted = schedules.slice().sort((a, b) => b.priority - a.priority);
+  mount(
+    main,
+    pageHead('Programación', 'Qué contenido se reproduce, cuándo y en qué pantallas', clock, h('button', { class: 'btn primary', disabled: !hasContent, onclick: () => scheduleEditor(null, cat, displays, walls) }, '+ Nuevo evento')),
+    !hasContent ? h('div', { class: 'card empty' }, 'Primero cree una lista de reproducción o un layout.') : null,
     h(
       'div',
       { class: 'card' },
-      h('p', { class: 'muted' }, 'Cuando varios eventos coinciden gana el de mayor prioridad; si tienen la misma prioridad, sus contenidos se intercalan. Fuera de los eventos, cada pantalla reproduce su lista por defecto.'),
-      schedules.length
+      h('p', { class: 'muted' }, 'Cuando varios eventos coinciden gana el de mayor prioridad; si tienen la misma prioridad, sus listas se intercalan. Fuera de los eventos, cada pantalla reproduce su contenido por defecto.'),
+      sorted.length
         ? h(
             'div',
             { class: 'table-wrap' },
             h(
               'table',
-              null,
-              h('thead', null, h('tr', null, h('th', null, 'Evento'), h('th', null, 'Lista'), h('th', null, 'Cuándo'), h('th', null, 'Pantallas'), h('th', null, 'Prioridad'), h('th', null, 'Estado'), h('th', null, ''))),
+              { class: 'sched' },
+              h('thead', null, h('tr', null, h('th', null, 'Contenido'), h('th', null, 'Evento'), h('th', null, 'Fecha'), h('th', null, 'Horario'), h('th', null, 'Pantallas'), h('th', null, 'Prioridad'), h('th', null, 'Estado'), h('th', null, ''))),
               h(
                 'tbody',
                 null,
-                schedules
-                  .slice()
-                  .sort((a, b) => b.priority - a.priority)
-                  .map((s) =>
+                sorted.map((s) => {
+                  const key = PCSchedule.contentKey(s);
+                  return h(
+                    'tr',
+                    null,
+                    h('td', null, h('div', { class: 'thumb-cell', title: 'Vista previa', onclick: () => contentRecord(key, cat) && previewContent(key, contentLabel(key, cat), contentRecord(key, cat)?.orientation === 'portrait') }, contentThumb(key, cat), h('span', null, contentLabel(key, cat)))),
+                    h('td', null, h('b', null, s.name)),
+                    h('td', null, h('div', null, '📅 ', describeDates(s)), h('div', { class: 'muted' }, describeDays(s))),
+                    h('td', null, '🕒 ', describeHours(s)),
+                    h('td', { class: 'muted' }, targets(s)),
+                    h('td', null, s.priority),
+                    h('td', null, s.enabled === false ? h('span', { class: 'badge off' }, 'Desactivado') : PCSchedule.isActive(s, now) ? h('span', { class: 'badge ok' }, 'Activo ahora') : h('span', { class: 'badge' }, 'En espera')),
                     h(
-                      'tr',
+                      'td',
                       null,
-                      h('td', null, h('b', null, s.name)),
-                      h('td', null, pName(s.playlistId)),
-                      h('td', null, describe(s)),
-                      h('td', { class: 'muted' }, dNames(s.displayIds)),
-                      h('td', null, s.priority),
-                      h('td', null, s.enabled === false ? h('span', { class: 'badge off' }, 'Desactivado') : PCSchedule.isActive(s, new Date()) ? h('span', { class: 'badge ok' }, 'Activo ahora') : h('span', { class: 'badge' }, 'En espera')),
                       h(
-                        'td',
-                        null,
+                        'div',
+                        { class: 'actions' },
+                        h('button', { class: 'btn small', onclick: () => scheduleEditor(s, cat, displays, walls) }, 'Editar'),
                         h(
-                          'div',
-                          { class: 'actions' },
-                          h('button', { class: 'btn small', onclick: () => scheduleEditor(s, playlists, displays) }, 'Editar'),
-                          h(
-                            'button',
-                            {
-                              class: 'btn small danger',
-                              onclick: async () => {
-                                if (!(await confirmBox(`¿Eliminar el evento "${s.name}"?`))) return;
-                                await guard(() => api('DELETE', '/api/schedules/' + s.id));
-                                route();
-                              },
+                          'button',
+                          {
+                            class: 'btn small danger',
+                            onclick: async () => {
+                              if (!(await confirmBox(`¿Eliminar el evento "${s.name}"?`))) return;
+                              await guard(() => api('DELETE', '/api/schedules/' + s.id));
+                              route();
                             },
-                            'Eliminar'
-                          )
+                          },
+                          'Eliminar'
                         )
                       )
                     )
-                  )
+                  );
+                })
               )
             )
           )
         : h('div', { class: 'empty' }, 'No hay eventos programados.')
-    )
+    ),
+    sorted.length ? h('div', { class: 'card' }, h('h2', null, 'Vista semanal'), weekView(sorted, cat)) : null
   );
 };
 
-function scheduleEditor(s, playlists, displays) {
+/** Calendario semanal: cada evento se dibuja como un bloque en su día y franja horaria. */
+function weekView(schedules, cat) {
+  const monday = new Date();
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  const colors = ['#2563eb', '#16a34a', '#d97706', '#db2777', '#7c3aed', '#0891b2', '#dc2626', '#65a30d'];
+  const grid = h('div', { class: 'week' });
+  grid.append(h('div', { class: 'wk-hours' }, h('div', { class: 'wk-head' }), ...[0, 3, 6, 9, 12, 15, 18, 21].map((hh) => h('div', { class: 'wk-hour', style: { top: `calc(28px + ${(hh / 24) * 100}% - ${(hh / 24) * 28}px)` } }, String(hh).padStart(2, '0') + ':00'))));
+  const nowD = new Date();
+  for (let i = 0; i < 7; i++) {
+    const day = new Date(monday);
+    day.setDate(monday.getDate() + i);
+    const col = h('div', { class: 'wk-col' + (day.toDateString() === nowD.toDateString() ? ' today' : '') }, h('div', { class: 'wk-head' }, DAYS[day.getDay()] + ' ' + day.getDate()));
+    const body = h('div', { class: 'wk-body' });
+    col.append(body);
+    schedules.forEach((s, idx) => {
+      if (s.enabled === false) return;
+      // ¿Aplica ese día? Se prueba a las 12:00 sin franja horaria
+      const probe = { ...s, startTime: '', endTime: '' };
+      const noon = new Date(day);
+      noon.setHours(12);
+      const start = PCSchedule.toMinutes(s.startTime, 0);
+      const end = PCSchedule.toMinutes(s.endTime, 1440);
+      const pieces = start < end ? [[start, end]] : start === end ? [[0, 1440]] : [[start, 1440]];
+      if (!PCSchedule.isActive(probe, noon)) return;
+      const key = PCSchedule.contentKey(s);
+      pieces.forEach(([a, b]) =>
+        body.append(
+          h(
+            'div',
+            { class: 'wk-ev', title: `${s.name} · ${contentLabel(key, cat)} · ${describeHours(s)}`, style: { top: (a / 1440) * 100 + '%', height: Math.max(2, ((b - a) / 1440) * 100) + '%', background: colors[idx % colors.length] } },
+            h('b', null, s.name),
+            h('span', null, describeHours(s))
+          )
+        )
+      );
+    });
+    if (day.toDateString() === nowD.toDateString()) body.append(h('div', { class: 'wk-now', style: { top: ((nowD.getHours() * 60 + nowD.getMinutes()) / 1440) * 100 + '%' } }));
+    grid.append(col);
+  }
+  return grid;
+}
+
+function scheduleEditor(s, cat, displays, walls) {
   const days = new Set(s?.days || []);
   const dsel = new Set(s?.displayIds || []);
+  const wsel = new Set(s?.wallIds || []);
+  const current = s ? PCSchedule.contentKey(s) : '';
+  const thumb = h('div', { class: 'sched-thumb' });
+  const select = h('select', { name: 'content', required: true }, contentOptions(cat, current, null));
+  const updThumb = () => mount(thumb, contentThumb(select.value, cat), h('span', { class: 'muted' }, contentLabel(select.value, cat)));
+  select.addEventListener('change', updThumb);
   const form = h(
     'form',
     { class: 'form' },
     h('h2', null, s ? 'Editar evento' : 'Nuevo evento'),
-    h('div', { class: 'row' }, field('Nombre', h('input', { name: 'name', value: s?.name || '', placeholder: 'Ej. Menú del desayuno', required: true })), field('Lista de reproducción', h('select', { name: 'playlistId', required: true }, playlists.map((p) => h('option', { value: p.id, selected: p.id === s?.playlistId }, p.name))))),
-    h('div', null, h('b', null, 'Días de la semana '), h('span', { class: 'muted' }, '(ninguno = todos)'), h('div', { class: 'checks' }, [1, 2, 3, 4, 5, 6, 0].map((d) => h('label', null, h('input', { type: 'checkbox', 'data-day': d, checked: days.has(d) }), DAYS[d])))),
-    h('div', { class: 'row' }, field('Hora de inicio', h('input', { type: 'time', name: 'startTime', value: s?.startTime || '' })), field('Hora de fin', h('input', { type: 'time', name: 'endTime', value: s?.endTime || '' }), 'Vacío = todo el día. Si el fin es anterior al inicio cruza la medianoche.')),
-    h('div', { class: 'row' }, field('Desde la fecha', h('input', { type: 'date', name: 'startDate', value: s?.startDate || '' })), field('Hasta la fecha', h('input', { type: 'date', name: 'endDate', value: s?.endDate || '' }))),
+    h('div', { class: 'row' }, field('Nombre', h('input', { name: 'name', value: s?.name || '', placeholder: 'Ej. Menú del desayuno', required: true })), field('Contenido', select)),
+    thumb,
+    h('div', null, h('b', null, 'Días de la semana '), h('span', { class: 'muted' }, '(ninguno = todos)'), h('div', { class: 'checks' }, [1, 2, 3, 4, 5, 6, 0].map((d) => h('label', null, h('input', { type: 'checkbox', 'data-day': d, checked: days.has(d) }), DAY_FULL[d])))),
+    h('div', { class: 'row' }, field('🕒 Hora de inicio', h('input', { type: 'time', name: 'startTime', value: s?.startTime || '' })), field('🕒 Hora de fin', h('input', { type: 'time', name: 'endTime', value: s?.endTime || '' }), 'Vacío = todo el día. Si el fin es anterior al inicio cruza la medianoche.')),
+    h('div', { class: 'row' }, field('📅 Desde la fecha', h('input', { type: 'date', name: 'startDate', value: s?.startDate || '' })), field('📅 Hasta la fecha', h('input', { type: 'date', name: 'endDate', value: s?.endDate || '' }))),
     h('div', { class: 'row' }, field('Prioridad (0–100)', h('input', { type: 'number', name: 'priority', min: 0, max: 100, value: s?.priority ?? 1 })), h('div', { class: 'checks shrink' }, h('label', null, h('input', { type: 'checkbox', name: 'enabled', checked: s ? s.enabled !== false : true }), 'Activado'))),
-    h('div', null, h('b', null, 'Pantallas '), h('span', { class: 'muted' }, '(ninguna = todas)'), h('div', { class: 'checks' }, displays.filter((d) => d.authorized).map((d) => h('label', null, h('input', { type: 'checkbox', 'data-display': d.id, checked: dsel.has(d.id) }), d.name)))),
+    h('div', null, h('b', null, 'Pantallas '), h('span', { class: 'muted' }, '(ninguna = todas)'), h('div', { class: 'checks' }, displays.filter((d) => d.authorized).map((d) => h('label', null, h('input', { type: 'checkbox', 'data-display': d.id, checked: dsel.has(d.id) }), (d.number ? `#${d.number} ` : '') + d.name)))),
+    walls.length ? h('div', null, h('b', null, 'Videowalls'), h('div', { class: 'checks' }, walls.map((w) => h('label', null, h('input', { type: 'checkbox', 'data-wall': w.id, checked: wsel.has(w.id) }), '🧱 ' + w.name)))) : null,
     h('div', { class: 'modal-foot' }, h('button', { type: 'button', class: 'btn', onclick: closeModal }, 'Cancelar'), h('button', { class: 'btn primary' }, 'Guardar'))
   );
   form.addEventListener('submit', (e) => {
@@ -927,6 +1180,7 @@ function scheduleEditor(s, playlists, displays) {
       enabled: !!form.querySelector('[name=enabled]').checked,
       days: [...form.querySelectorAll('[data-day]:checked')].map((x) => Number(x.dataset.day)),
       displayIds: [...form.querySelectorAll('[data-display]:checked')].map((x) => x.dataset.display),
+      wallIds: [...form.querySelectorAll('[data-wall]:checked')].map((x) => x.dataset.wall),
     };
     guard(async () => {
       if (s) await api('PUT', '/api/schedules/' + s.id, body);
@@ -937,6 +1191,7 @@ function scheduleEditor(s, playlists, displays) {
     });
   });
   modal(form);
+  updThumb();
 }
 
 // ---------------------------------------------------------------- Anuncio inmediato
@@ -1046,4 +1301,4 @@ pages.ajustes = async (main) => {
 };
 
 // ---------------------------------------------------------------- inicio
-api('GET', '/api/me').then(startApp).catch(showLogin);
+document.addEventListener('DOMContentLoaded', () => api('GET', '/api/me').then(startApp).catch(showLogin));

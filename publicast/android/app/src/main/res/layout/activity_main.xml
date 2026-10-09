@@ -7,29 +7,12 @@
     android:background="@android:color/black"
     android:keepScreenOn="true">
 
-    <!-- Zona principal de contenido -->
+    <!-- Zona de contenido: aquí se crean las zonas del layout (y el lienzo del videowall) -->
     <FrameLayout
         android:id="@+id/stage"
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
-
-        <androidx.media3.ui.PlayerView
-            android:id="@+id/video"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:visibility="gone"
-            app:resize_mode="fit"
-            app:shutter_background_color="@android:color/transparent"
-            app:surface_type="texture_view"
-            app:use_controller="false" />
-    </FrameLayout>
-
-    <com.publicast.player.TickerView
-        android:id="@+id/ticker"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:layout_gravity="bottom"
-        android:visibility="gone" />
+        android:layout_height="match_parent"
+        android:clipChildren="true" />
 
     <TextView
         android:id="@+id/announce"
@@ -199,17 +182,55 @@
             android:textSize="18sp" />
     </LinearLayout>
 
-    <TextView
+    <!-- Identificar: número grande de la pantalla, como en Windows -->
+    <FrameLayout
         android:id="@+id/identify"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="#EB2563EB"
-        android:gravity="center"
-        android:padding="24dp"
-        android:textColor="#FFFFFF"
-        android:textSize="64sp"
-        android:textStyle="bold"
-        android:visibility="gone" />
+        android:background="#59000000"
+        android:foreground="@drawable/identify_frame"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/identifyBox"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:layout_margin="40dp"
+            android:background="@drawable/identify_box"
+            android:gravity="center_horizontal"
+            android:minWidth="200dp"
+            android:orientation="vertical"
+            android:paddingLeft="40dp"
+            android:paddingTop="8dp"
+            android:paddingRight="40dp"
+            android:paddingBottom="24dp">
+
+            <TextView
+                android:id="@+id/identifyNumber"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-light"
+                android:includeFontPadding="false"
+                android:textColor="#FFFFFF"
+                android:textSize="160sp" />
+
+            <TextView
+                android:id="@+id/identifyName"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#FFFFFF"
+                android:textSize="26sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/identifyDetail"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#CBD5E1"
+                android:textSize="16sp" />
+        </LinearLayout>
+    </FrameLayout>
 
     <TextView
         android:id="@+id/status"

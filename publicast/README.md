@@ -18,9 +18,14 @@ contenido multimedia, información y anuncios desde un servidor central a pantal
 | Área | Qué hace |
 |---|---|
 | **Biblioteca** | Subida de imágenes (JPG, PNG, GIF animado, WebP) y videos (MP4, WebM, MKV, MOV) arrastrando archivos; páginas web (URL) y mensajes de texto con colores. |
-| **Listas de reproducción** | Orden por arrastre, duración por contenido, transiciones (fundido, deslizar), ajuste de imagen (ajustar/rellenar/estirar), color de fondo y **cintillo de noticias** en movimiento. Vista previa en el navegador. |
-| **Programación** | Eventos por días de la semana, franja horaria (incluso nocturna, p. ej. 22:00–06:00), rango de fechas, prioridad y pantallas destino. Si coinciden varios con la misma prioridad, se intercalan. Fuera de horario se usa la lista por defecto de cada pantalla. |
-| **Pantallas** | Emparejamiento seguro con código de 6 dígitos, estado en línea/desconectada, qué se está reproduciendo, modelo, resolución, espacio libre, orientación, comandos *Identificar* y *Recargar*. |
+| **Listas de reproducción** | Orden por arrastre, duración por contenido, transiciones (fundido, deslizar), ajuste de imagen (ajustar/rellenar/estirar), color de fondo y **cintillo de noticias**. Vista previa en el navegador. |
+| **Cintillo de noticias** | Texto en movimiento con velocidad, **tipo de letra**, **tamaño**, negrita, **color** de texto y fondo, **transparencia** del fondo y posición (arriba/abajo), con vista previa en vivo. |
+| **Layouts** | Pantalla dividida en zonas que se **arrastran y redimensionan** con el ratón: listas de reproducción, cintillo y **reloj con fecha**. Plantillas (Noticiero, Principal + lateral, 2 × 2, forma de L…), orden de capas y formato horizontal o vertical. |
+| **Videowall** | Varias pantallas (hasta 8 × 8) forman una sola imagen: cada una muestra su porción y todas cambian a la vez, sincronizadas con la hora del servidor. |
+| **Identificar** | Como en Windows: cada pantalla muestra en grande su número (1, 2, 3…), su nombre y su posición en el videowall. |
+| **Programación** | Eventos por días, franja horaria (incluso nocturna, p. ej. 22:00–06:00), rango de fechas, prioridad y pantallas o videowalls destino. Tabla con **miniatura**, **fecha** y **horario** de cada evento, reloj en vivo y **vista semanal**. |
+| **Pantallas** | Emparejamiento seguro con código de 6 dígitos, número de pantalla, estado en línea/desconectada, qué se está reproduciendo, modelo, resolución, espacio libre, orientación, comandos *Identificar* y *Recargar*. |
+| **Cómo usar** | Guía paso a paso de todas las funciones dentro del propio panel. |
 | **Anuncio inmediato** | Mensaje urgente al instante (pantalla completa o banda superior/inferior) en una, varias o todas las pantallas, por WebSocket. |
 | **Estadísticas** | Prueba de reproducción (*proof of play*): cuántas veces y cuánto tiempo se mostró cada anuncio por pantalla. Exportación a CSV. |
 | **Funcionamiento sin red** | El reproductor descarga todo a su almacenamiento (verificando MD5) y sigue reproduciendo y respetando los horarios si se cae la conexión. |
@@ -135,12 +140,24 @@ Para distribuirlo en Google Play configure su propia firma en `app/build.gradle.
 Cualquier cambio se envía automáticamente a las pantallas en segundos (aviso por WebSocket y,
 como respaldo, latido cada 60 s).
 
+## Videowall paso a paso
+
+1. Coloque las pantallas y autorícelas en **Pantallas**.
+2. **Videowall → + Nuevo videowall**: indique columnas y filas.
+3. Pulse **🔢 Identificar pantallas**: cada televisor muestra un número grande.
+4. Asigne cada pantalla a su celda (1 = arriba a la izquierda) y elija el contenido.
+5. Prepare las imágenes/videos con la resolución total (p. ej. 3840 × 2160 para 2 × 2 Full HD).
+
+La sincronización se basa en la hora del servidor; las transiciones se desactivan en el videowall
+para que todas las pantallas cambien exactamente a la vez. Para videos, abra antes la Biblioteca:
+el panel detecta y guarda la duración real de cada video.
+
 ## API de reproductores (para integraciones)
 
 | Método | Ruta | Descripción |
 |---|---|---|
 | `POST` | `/api/player/register` | `{ key, info }` → `{ authorized, code }` |
-| `GET` | `/api/player/manifest` | Programación, listas y archivos de la pantalla (`Authorization: Bearer <key>`) |
+| `GET` | `/api/player/manifest` | Programación, listas, layouts, videowall y archivos de la pantalla (`Authorization: Bearer <key>`) |
 | `POST` | `/api/player/heartbeat` | Estado actual; responde con la versión de contenido |
 | `POST` | `/api/player/stats` | `{ records: [{ mediaId, playlistId, startedAt, duration }] }` |
 | `WS` | `/ws?key=<key>` | Mensajes `version`, `authorized`, `announce`, `clearAnnouncement`, `identify`, `reload`, `unpaired` |

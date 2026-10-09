@@ -1,0 +1,394 @@
+package com.publicast.player
+
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.ImageDecoder
+import android.graphics.Typeface
+import android.graphics.drawable.AnimatedImageDrawable
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import java.io.File
+import java.util.concurrent.ExecutorService
+
+/**
+ * Reproduce en bucle una secuencia de contenidos dentro de un contenedor (una zona del layout
+ * o la pantalla completa). En modo [sync] (videowall) la posición se calcula a partir de la
+ * hora del servidor, de modo que todas las pantallas muestran lo mismo al mismo tiempo.
+ */
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
+class RegionPlayer(
+    private val activity: Activity,
+    private val container: FrameLayout,
+    private val items: List<Item>,
+    playlist: Playlist,
+    private val cache: MediaCache,
+    private val decoder: ExecutorService,
+    private val sync: Boolean,
+    private val screenMin: Int,
+    private val serverNow: () -> Long,
+    private val onPlayed: (item: Item, startedAt: Long, seconds: Int) -> Unit,
+) {
+    private val handler = Handler(Looper.getMainLooper())
+    private val transition = if (sync) "none" else playlist.transition
+    private val fit = playlist.fit
+    private var player: ExoPlayer? = null
+    private var videoView: PlayerView? = null
+    private var currentView: View? = null
+    private var index = 0
+    private var token = 0
+    private var stopped = false
+    private var playStarted = 0L
+    private var playing: Item? = null
+    @Volatile var current: Item? = null
+        private set
+
+    private val advance = Runnable { next() }
+
+    init {
+        container.setBackgroundColor(playlist.background)
+    }
+
+    fun start() = next()
+
+    fun stop() {
+        stopped = true
+        token++
+        handler.removeCallbacksAndMessages(null)
+        finishStat()
+        for (i in container.childCount - 1 downTo 0) discard(container.getChildAt(i))
+        player?.release()
+        player = null
+        videoView = null
+        currentView = null
+    }
+
+    fun pause() = player?.pause()
+
+    fun resume() {
+        if (currentView != null && currentView === videoView) player?.play()
+    }
+
+    private fun durationOf(item: Item): Int = when {
+        item.duration > 0 -> item.duration
+        item.type == "video" -> if (item.naturalDuration > 0) item.naturalDuration else 30
+        else -> 10
+    }
+
+    private data class Position(val index: Int, val offsetMs: Long, val remainingMs: Long)
+
+    /** Posición en la secuencia según la hora del servidor (videowall). */
+    private fun syncPosition(): Position {
+        val totalMs = items.sumOf { durationOf(it) * 1000L }
+        var t = ((serverNow() % totalMs) + totalMs) % totalMs
+        items.forEachIndexed { i, it ->
+            val d = durationOf(it) * 1000L
+            if (t < d) return Position(i, t, d - t)
+            t -= d
+        }
+        return Position(0, 0, durationOf(items[0]) * 1000L)
+    }
+
+    private fun next() {
+        if (stopped || items.isEmpty()) return
+        handler.removeCallbacks(advance)
+        finishStat()
+        val item: Item
+        var offsetMs = 0L
+        val waitMs: Long
+        if (sync) {
+            val p = syncPosition()
+            item = items[p.index]
+            offsetMs = p.offsetMs
+            waitMs = p.remainingMs
+        } else {
+            item = items[index % items.size]
+            index++
+            waitMs = durationOf(item) * 1000L
+        }
+        // Un único contenido estático: no se vuelve a dibujar para evitar parpadeos
+        if (items.size == 1 && current?.id == item.id && item.type != "video" && currentView != null) {
+            beginStat(item)
+            handler.postDelayed(advance, waitMs)
+            return
+        }
+        render(item, offsetMs, waitMs)
+    }
+
+    private fun render(item: Item, offsetMs: Long, waitMs: Long) {
+        val t = ++token
+        when (item.type) {
+            "image" -> {
+                val file = cache.fileFor(item.file ?: "")
+                val w = container.width.coerceAtLeast(640)
+                val h = container.height.coerceAtLeast(360)
+                decoder.execute {
+                    val drawable = decodeImage(file, w, h)
+                    handler.post {
+                        if (t != token || stopped) return@post
+                        if (drawable == null) {
+                            handler.postDelayed(advance, 1000)
+                            return@post
+                        }
+                        val iv = ImageView(activity)
+                        iv.scaleType = when (fit) {
+                            "cover" -> ImageView.ScaleType.CENTER_CROP
+                            "fill" -> ImageView.ScaleType.FIT_XY
+                            else -> ImageView.ScaleType.FIT_CENTER
+                        }
+                        iv.setImageDrawable(drawable)
+                        startAnimated(drawable)
+                        show(iv, item)
+                        handler.postDelayed(advance, waitMs)
+                    }
+                }
+            }
+            "video" -> {
+                val (p, view) = ensureVideo()
+                view.resizeMode = when (fit) {
+                    "cover" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    "fill" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                }
+                p.setMediaItem(MediaItem.fromUri(Uri.fromFile(cache.fileFor(item.file ?: ""))), if (offsetMs > 500) offsetMs else 0L)
+                p.prepare()
+                p.playWhenReady = true
+                show(view, item)
+                // Sin videowall: duración 0 = video completo (límite de seguridad de 3 h)
+                handler.postDelayed(advance, if (sync || item.duration > 0) waitMs else 3 * 3600 * 1000L)
+            }
+            "web" -> {
+                val wv = createWebView(item.url ?: "")
+                if (wv == null) {
+                    handler.postDelayed(advance, 1000)
+                    return
+                }
+                show(wv, item)
+                handler.postDelayed(advance, waitMs)
+            }
+            "text" -> {
+                show(buildTextSlide(item.text!!), item)
+                handler.postDelayed(advance, waitMs)
+            }
+            else -> handler.postDelayed(advance, 1000)
+        }
+    }
+
+    private fun ensureVideo(): Pair<ExoPlayer, PlayerView> {
+        val existing = player
+        val view = videoView
+        if (existing != null && view != null) return existing to view
+        val v = activity.layoutInflater.inflate(R.layout.region_video, container, false) as PlayerView
+        val p = ExoPlayer.Builder(activity).build()
+        p.repeatMode = Player.REPEAT_MODE_OFF
+        p.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (!sync && state == Player.STATE_ENDED && currentView === videoView && current?.type == "video") next()
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                Log.w(TAG, "Error de video: ${error.errorCodeName}")
+                if (current?.type == "video") {
+                    handler.removeCallbacks(advance)
+                    handler.postDelayed(advance, 1000)
+                }
+            }
+        })
+        v.player = p
+        v.visibility = View.GONE
+        container.addView(v, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        player = p
+        videoView = v
+        return p to v
+    }
+
+    /** Coloca la nueva vista con la transición de la lista. */
+    private fun show(view: View, item: Item) {
+        val old = currentView
+        current = item
+        beginStat(item)
+        if (view === old) return // video seguido de video: se reutiliza el reproductor
+        view.animate().cancel()
+        for (i in container.childCount - 1 downTo 0) {
+            val v = container.getChildAt(i)
+            if (v !== old && v !== videoView) discard(v)
+        }
+        if (view === videoView) {
+            view.visibility = View.VISIBLE
+            view.bringToFront()
+        } else {
+            container.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+        currentView = view
+        val width = container.width.toFloat()
+        when (transition) {
+            "fade" -> {
+                view.translationX = 0f
+                view.alpha = 0f
+                view.animate().alpha(1f).setDuration(TRANSITION_MS).withEndAction { cleanup() }.start()
+            }
+            "slide" -> {
+                view.alpha = 1f
+                view.translationX = width
+                view.animate().translationX(0f).setDuration(TRANSITION_MS).withEndAction { cleanup() }.start()
+                old?.animate()?.translationX(-width)?.setDuration(TRANSITION_MS)?.start()
+            }
+            else -> {
+                view.alpha = 1f
+                view.translationX = 0f
+                cleanup()
+            }
+        }
+    }
+
+    /** Deja sólo la vista actual (el reproductor de video se oculta, no se elimina). */
+    private fun cleanup() {
+        for (i in container.childCount - 1 downTo 0) {
+            val v = container.getChildAt(i)
+            if (v !== currentView) discard(v)
+        }
+    }
+
+    private fun discard(v: View) {
+        v.animate().cancel()
+        if (v === videoView) {
+            if (v.visibility != View.GONE) {
+                v.visibility = View.GONE
+                if (!stopped) {
+                    player?.stop()
+                    player?.clearMediaItems()
+                }
+            }
+            v.alpha = 1f
+            v.translationX = 0f
+            if (!stopped) return
+        }
+        container.removeView(v)
+        if (v is WebView) {
+            v.stopLoading()
+            v.destroy()
+        }
+        if (v is ImageView) v.setImageDrawable(null)
+    }
+
+    // ------------------------------------------------------------------ tipos de contenido
+    private fun decodeImage(file: File, reqW: Int, reqH: Int): Drawable? = try {
+        if (!file.exists()) null
+        else if (Build.VERSION.SDK_INT >= 28) {
+            ImageDecoder.decodeDrawable(ImageDecoder.createSource(file)) { dec, info, _ ->
+                var sample = 1
+                while (info.size.width / (sample * 2) >= reqW && info.size.height / (sample * 2) >= reqH) sample *= 2
+                dec.setTargetSampleSize(sample)
+            }
+        } else {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= reqW && bounds.outHeight / (sample * 2) >= reqH) sample *= 2
+            BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+                ?.let { BitmapDrawable(activity.resources, it) }
+        }
+    } catch (e: Throwable) {
+        Log.w(TAG, "No se pudo decodificar ${file.name}", e)
+        null
+    }
+
+    private fun startAnimated(d: Drawable) {
+        if (Build.VERSION.SDK_INT >= 28 && d is AnimatedImageDrawable) {
+            d.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
+            d.start()
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun createWebView(url: String): WebView? = try {
+        WebView(activity).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.mediaPlaybackRequiresUserGesture = false
+            settings.loadWithOverviewMode = true
+            settings.useWideViewPort = true
+            webViewClient = WebViewClient()
+            webChromeClient = WebChromeClient()
+            setBackgroundColor(Color.WHITE)
+            isFocusable = false
+            loadUrl(url)
+        }
+    } catch (e: Exception) {
+        // Algunos TV Box no traen WebView instalado
+        Log.w(TAG, "WebView no disponible", e)
+        null
+    }
+
+    private fun buildTextSlide(t: TextStyle): View {
+        val minDim = minOf(container.width, container.height).takeIf { it > 0 } ?: screenMin
+        val gravity = when (t.align) {
+            "left" -> Gravity.START
+            "right" -> Gravity.END
+            else -> Gravity.CENTER_HORIZONTAL
+        }
+        return LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(t.bg)
+            this.gravity = Gravity.CENTER_VERTICAL or gravity
+            val pad = (minDim * 0.07f).toInt()
+            setPadding(pad, pad, pad, pad)
+            if (t.title.isNotEmpty()) addView(TextView(context).apply {
+                text = t.title
+                setTextColor(t.accent)
+                setTextSize(TypedValue.COMPLEX_UNIT_PX, minDim * 0.09f)
+                typeface = Typeface.DEFAULT_BOLD
+                this.gravity = gravity
+                setPadding(0, 0, 0, (minDim * 0.03f).toInt())
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            if (t.body.isNotEmpty()) addView(TextView(context).apply {
+                text = t.body
+                setTextColor(t.color)
+                setTextSize(TypedValue.COMPLEX_UNIT_PX, minDim * 0.05f)
+                setLineSpacing(0f, 1.2f)
+                this.gravity = gravity
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    // ------------------------------------------------------------------ estadísticas
+    private fun beginStat(item: Item) {
+        playing = item
+        playStarted = System.currentTimeMillis()
+    }
+
+    private fun finishStat() {
+        val item = playing ?: return
+        playing = null
+        onPlayed(item, playStarted, ((System.currentTimeMillis() - playStarted) / 1000).toInt())
+    }
+
+    companion object {
+        private const val TAG = "PubliCast"
+        private const val TRANSITION_MS = 800L
+    }
+}

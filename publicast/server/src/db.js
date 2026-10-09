@@ -13,6 +13,8 @@ const EMPTY = () => ({
   users: [],
   media: [],
   playlists: [],
+  layouts: [],
+  walls: [],
   displays: [],
   schedules: [],
   stats: [],
