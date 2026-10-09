@@ -59,5 +59,7 @@ class SchedulerTest {
     fun normalizaUrl() {
         assertEquals("http://192.168.1.10:8080", Prefs.normalizeUrl(" 192.168.1.10:8080/ "))
         assertEquals("https://cms.ejemplo.com", Prefs.normalizeUrl("https://cms.ejemplo.com"))
+        assertEquals(listOf("http://192.168.100.50", "http://192.168.100.50:8080"), Prefs.candidateUrls("http://192.168.100.50"))
+        assertEquals(listOf("http://192.168.100.50:9000"), Prefs.candidateUrls("http://192.168.100.50:9000"))
     }
 }

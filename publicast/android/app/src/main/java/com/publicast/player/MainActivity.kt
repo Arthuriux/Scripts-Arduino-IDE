@@ -198,15 +198,18 @@ class MainActivity : Activity(), SyncManager.Listener {
                 error.text = "Conectando con $url…"
                 button.isEnabled = false
                 Executors.newSingleThreadExecutor().execute {
-                    val ok = Api(url, prefs.displayKey).health()
+                    // Si no se indicó puerto, se prueba también el 8080 (puerto por defecto del servidor)
+                    val found = Prefs.candidateUrls(url).firstOrNull { Api(it, prefs.displayKey).health() }
                     handler.post {
                         button.isEnabled = true
-                        if (ok) {
-                            prefs.serverUrl = url
+                        if (found != null) {
+                            prefs.serverUrl = found
                             error.text = ""
                             startSync()
                         } else {
-                            error.text = "No se pudo conectar con $url\nCompruebe la dirección, el puerto y la red."
+                            error.text = "No se pudo conectar con $url\n" +
+                                "Compruebe la dirección y el puerto (normalmente :8080), que el dispositivo esté " +
+                                "en la misma red y que el Firewall de Windows permita el puerto."
                         }
                     }
                 }

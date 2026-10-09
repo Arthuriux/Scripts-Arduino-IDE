@@ -40,5 +40,12 @@ class Prefs(context: Context) {
             if (!s.startsWith("http://", true) && !s.startsWith("https://", true)) s = "http://$s"
             return s.trimEnd('/')
         }
+
+        /** Direcciones a probar: la escrita y, si no lleva puerto, la misma con :8080. */
+        fun candidateUrls(url: String): List<String> {
+            val hostPart = url.substringAfter("://").substringBefore('/')
+            val hasPort = hostPart.substringAfterLast(']').contains(':')
+            return if (hasPort) listOf(url) else listOf(url, url.replaceFirst(hostPart, "$hostPart:8080"))
+        }
     }
 }

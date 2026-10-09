@@ -11,8 +11,8 @@ android {
         applicationId = "com.publicast.player"
         minSdk = 21          // Android 5.0+: cubre la mayoría de TV Box y tablets
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
     }
 
     buildTypes {
