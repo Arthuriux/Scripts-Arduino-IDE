@@ -29,6 +29,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -49,12 +51,15 @@ class RegionPlayer(
     private val cache: MediaCache,
     private val decoder: ExecutorService,
     private val sync: Boolean,
+    /** Modo ligero: SurfaceView, sin fundidos en video, GIF estáticos y transiciones cortas. */
+    private val lite: Boolean,
     private val screenMin: Int,
     private val serverNow: () -> Long,
     private val onPlayed: (item: Item, startedAt: Long, seconds: Int) -> Unit,
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val transition = if (sync) "none" else playlist.transition
+    private val transitionMs = if (lite) 450L else TRANSITION_MS
     private val fit = playlist.fit
     private var player: ExoPlayer? = null
     private var videoView: PlayerView? = null
@@ -202,8 +207,18 @@ class RegionPlayer(
         val existing = player
         val view = videoView
         if (existing != null && view != null) return existing to view
-        val v = activity.layoutInflater.inflate(R.layout.region_video, container, false) as PlayerView
-        val p = ExoPlayer.Builder(activity).build()
+        // En videowall con Android < 7 SurfaceView no sigue bien la traslación del lienzo
+        val surface = lite && (!sync || Build.VERSION.SDK_INT >= 24)
+        val layout = if (surface) R.layout.region_video_surface else R.layout.region_video
+        val v = activity.layoutInflater.inflate(layout, container, false) as PlayerView
+        // Archivos locales: basta un búfer pequeño (menos memoria en equipos de 1-2 GB)
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(2_000, 8_000, 500, 1_000)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        // Si el decodificador por hardware falla, prueba con otro en lugar de quedarse en negro
+        val renderers = DefaultRenderersFactory(activity).setEnableDecoderFallback(true)
+        val p = ExoPlayer.Builder(activity, renderers).setLoadControl(loadControl).build()
         p.repeatMode = Player.REPEAT_MODE_OFF
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
@@ -245,17 +260,20 @@ class RegionPlayer(
         }
         currentView = view
         val width = container.width.toFloat()
-        when (transition) {
+        // SurfaceView no admite transparencia: en modo ligero el video entra por corte
+        val effective = if (lite && view === videoView) "none" else transition
+        when (effective) {
             "fade" -> {
                 view.translationX = 0f
                 view.alpha = 0f
-                view.animate().alpha(1f).setDuration(TRANSITION_MS).withEndAction { cleanup() }.start()
+                // withLayer(): la GPU anima una textura en lugar de redibujar la vista en cada fotograma
+                view.animate().alpha(1f).setDuration(transitionMs).withLayer().withEndAction { cleanup() }.start()
             }
             "slide" -> {
                 view.alpha = 1f
                 view.translationX = width
-                view.animate().translationX(0f).setDuration(TRANSITION_MS).withEndAction { cleanup() }.start()
-                old?.animate()?.translationX(-width)?.setDuration(TRANSITION_MS)?.start()
+                view.animate().translationX(0f).setDuration(transitionMs).withLayer().withEndAction { cleanup() }.start()
+                old?.animate()?.translationX(-width)?.setDuration(transitionMs)?.withLayer()?.start()
             }
             else -> {
                 view.alpha = 1f
@@ -298,7 +316,14 @@ class RegionPlayer(
     // ------------------------------------------------------------------ tipos de contenido
     private fun decodeImage(file: File, reqW: Int, reqH: Int): Drawable? = try {
         if (!file.exists()) null
-        else if (Build.VERSION.SDK_INT >= 28) {
+        else if (Build.VERSION.SDK_INT >= 28 && lite) {
+            // Modo ligero: imagen estática (los GIF animados consumen mucha CPU)
+            BitmapDrawable(activity.resources, ImageDecoder.decodeBitmap(ImageDecoder.createSource(file)) { dec, info, _ ->
+                var sample = 1
+                while (info.size.width / (sample * 2) >= reqW && info.size.height / (sample * 2) >= reqH) sample *= 2
+                dec.setTargetSampleSize(sample)
+            })
+        } else if (Build.VERSION.SDK_INT >= 28) {
             ImageDecoder.decodeDrawable(ImageDecoder.createSource(file)) { dec, info, _ ->
                 var sample = 1
                 while (info.size.width / (sample * 2) >= reqW && info.size.height / (sample * 2) >= reqH) sample *= 2
@@ -309,7 +334,11 @@ class RegionPlayer(
             BitmapFactory.decodeFile(file.absolutePath, bounds)
             var sample = 1
             while (bounds.outWidth / (sample * 2) >= reqW && bounds.outHeight / (sample * 2) >= reqH) sample *= 2
-            BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+            BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply {
+                inSampleSize = sample
+                // JPEG sin transparencia: RGB_565 usa la mitad de memoria en equipos antiguos
+                if (lite && file.extension.lowercase() in setOf("jpg", "jpeg")) inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+            })
                 ?.let { BitmapDrawable(activity.resources, it) }
         }
     } catch (e: Throwable) {

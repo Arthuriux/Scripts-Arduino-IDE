@@ -140,6 +140,24 @@ Para distribuirlo en Google Play configure su propia firma en `app/build.gradle.
 Cualquier cambio se envía automáticamente a las pantallas en segundos (aviso por WebSocket y,
 como respaldo, latido cada 60 s).
 
+## Fire TV Stick y TV Box económicos
+
+La app activa automáticamente el **modo ligero** en Fire TV y equipos con menos de 2,5 GB de RAM
+(también se puede forzar por pantalla en *Pantallas → Editar → Rendimiento*):
+
+- Video con `SurfaceView` (decodificación directa, sin copia extra por la GPU) y búfer pequeño.
+- Un solo video simultáneo por layout (la zona más grande); las demás zonas muestran imágenes.
+- Transiciones cortas sobre capa de hardware, GIF estáticos y cintillo a 30 fps.
+
+Recomendaciones de contenido: **MP4 H.264 ≤ 1080p**, imágenes JPG de 1920 × 1080, sin páginas web.
+El botón **⚡ Optimizar para TV** de la Biblioteca convierte cualquier video a ese formato
+(requiere [ffmpeg](https://ffmpeg.org) en el servidor: en Windows `winget install ffmpeg`;
+o indique la ruta con la variable `FFMPEG_PATH`).
+
+Ajustes del Fire TV: desactivar la reproducción automática del contenido destacado, salvapantallas
+en "Nunca", desactivar la recopilación de datos de uso, cerrar/desinstalar apps que no se usen,
+alimentarlo con su propio cargador y reiniciarlo una vez al día.
+
 ## Videowall paso a paso
 
 1. Coloque las pantallas y autorícelas en **Pantallas**.

@@ -288,6 +288,8 @@ class SyncManager(
             .put("resolution", "${dm.widthPixels}x${dm.heightPixels}")
             .put("appVersion", BuildConfigCompat.versionName(context))
             .put("freeSpace", "${cache.freeSpace() / (1024 * 1024)} MB")
+            .put("ram", "${DeviceProfile.totalRamMb(context)} MB")
+            .put("lowEnd", DeviceProfile.isLowEnd(context))
     }
 
     private fun isoDate(ms: Long): String {

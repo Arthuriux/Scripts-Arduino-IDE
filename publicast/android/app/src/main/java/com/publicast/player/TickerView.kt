@@ -14,9 +14,12 @@ class TickerView @JvmOverloads constructor(context: Context, attrs: AttributeSet
     private var offset = Float.NaN
     private var speedPx = 80f
     private var lastFrame = 0L
+    private var frameDelayMs = 0L
 
     /** @param textPx tamaño de la letra en píxeles */
-    fun configure(style: TickerStyle, textPx: Float) {
+    /** @param maxFps en modo ligero se limita a 30 fotogramas por segundo para aliviar la GPU */
+    fun configure(style: TickerStyle, textPx: Float, maxFps: Int = 60) {
+        frameDelayMs = if (maxFps >= 60) 0L else 1000L / maxFps
         text = "${style.text}     •     "
         speedPx = style.speed * resources.displayMetrics.density
         setBackgroundColor(Manifest.withOpacity(style.bg, style.opacity))
@@ -43,6 +46,6 @@ class TickerView @JvmOverloads constructor(context: Context, attrs: AttributeSet
             canvas.drawText(text, x, y, paint)
             x += textWidth
         }
-        postInvalidateOnAnimation()
+        if (frameDelayMs > 0) postInvalidateDelayed(frameDelayMs) else postInvalidateOnAnimation()
     }
 }

@@ -219,6 +219,35 @@ test('layouts, videowall e identificación', async () => {
   assert.ok(!(await call('GET', '/api/schedules')).body.some((s) => s.content === 'l:' + lay.body.id));
 });
 
+test('optimiza videos con ffmpeg y ajusta el rendimiento de la pantalla', async (t) => {
+  const { spawnSync } = require('child_process');
+  const displays = (await call('GET', '/api/displays')).body;
+  const perf = await call('PUT', '/api/displays/' + displays[0].id, { performance: 'lite' });
+  assert.equal(perf.body.performance, 'lite');
+  assert.equal((await player('GET', '/api/player/manifest')).body.display.performance, 'lite');
+
+  const sys = await call('GET', '/api/system');
+  if (!sys.body.ffmpeg || spawnSync('ffmpeg', ['-version']).status !== 0) return t.skip('ffmpeg no disponible');
+  const webm = path.join(dataDir, 'clip.webm');
+  spawnSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25', '-t', '1', '-c:v', 'libvpx', webm]);
+  const fd = new FormData();
+  fd.append('files', new Blob([fs.readFileSync(webm)], { type: 'video/webm' }), 'clip.webm');
+  const up = await fetch(base + '/api/media/upload', { method: 'POST', body: fd, headers: { cookie } });
+  const [vid] = await up.json();
+  assert.equal((await call('POST', `/api/media/${vid.id}/optimize`)).status, 200);
+  let m;
+  for (let i = 0; i < 100; i++) {
+    m = (await call('GET', '/api/media')).body.find((x) => x.id === vid.id);
+    if (!m.optimizing) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(m.optimized, true, m.optimizeError);
+  assert.equal(m.mime, 'video/mp4');
+  assert.match(m.file, /\.mp4$/);
+  assert.ok(!fs.existsSync(path.join(dataDir, 'media', vid.file)), 'se elimina el archivo original');
+  assert.equal((await fetch(base + m.url)).status, 200);
+});
+
 test('al eliminar contenido se quita de las listas', async () => {
   assert.equal((await call('DELETE', '/api/media/' + imageId)).status, 200);
   const pls = await call('GET', '/api/playlists');

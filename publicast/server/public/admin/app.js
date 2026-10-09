@@ -479,6 +479,19 @@ function editDisplay(d, cat, after) {
         ].map(([v, l]) => h('option', { value: v, selected: (d.orientation || 'auto') === v }, l))
       )
     ),
+    field(
+      'Rendimiento',
+      h(
+        'select',
+        { name: 'performance' },
+        [
+          ['auto', 'Automático (recomendado): modo ligero en Fire TV y equipos de menos de 2,5 GB de RAM'],
+          ['lite', 'Modo ligero: Fire TV Stick, TV Box económicos'],
+          ['high', 'Alta calidad: transiciones completas y GIF animados'],
+        ].map(([v, l]) => h('option', { value: v, selected: (d.performance || 'auto') === v }, l))
+      ),
+      'El modo ligero usa el decodificador de video más eficiente, reduce las animaciones y reproduce video en una sola zona del layout.'
+    ),
     h('h3', null, 'Información del dispositivo'),
     h('div', { class: 'muted' }, Object.entries(d.info || {}).map(([k, v]) => h('div', null, `${k}: ${v}`))),
     d.status?.error ? h('p', { class: 'error' }, 'Último error: ' + d.status.error) : null,
@@ -497,12 +510,17 @@ function editDisplay(d, cat, after) {
 }
 
 // ---------------------------------------------------------------- Biblioteca
+let systemInfo = { ffmpeg: false };
+
 pages.biblioteca = async (main) => {
   let filter = 'all';
+  systemInfo = await api('GET', '/api/system').catch(() => ({ ffmpeg: false }));
   const grid = h('div', { class: 'media-grid' });
   const load = async () => {
     const media = await api('GET', '/api/media');
     const list = media.filter((m) => filter === 'all' || m.type === filter).reverse();
+    clearInterval(refreshTimer);
+    if (media.some((m) => m.optimizing)) refreshTimer = setInterval(() => load().catch(() => {}), 5000);
     mount(grid, ...(list.length ? list.map((m) => mediaCard(m, load)) : [h('div', { class: 'empty' }, 'No hay contenidos todavía.')]));
   };
 
@@ -590,10 +608,21 @@ function mediaCard(m, reload) {
   const thumb = thumbFor(m);
   // Guarda la duración real del video (necesaria para sincronizar videowalls)
   const v = thumb.querySelector('video');
-  if (v && !m.naturalDuration)
+  if (v && (!m.naturalDuration || !m.width))
     v.addEventListener('loadedmetadata', () => {
-      if (Number.isFinite(v.duration) && v.duration > 0) api('PUT', '/api/media/' + m.id, { naturalDuration: Math.round(v.duration) }).catch(() => {});
+      const meta = { width: v.videoWidth, height: v.videoHeight };
+      if (Number.isFinite(v.duration) && v.duration > 0) meta.naturalDuration = Math.round(v.duration);
+      api('PUT', '/api/media/' + m.id, meta).catch(() => {});
     });
+  // Avisos para equipos modestos (Fire TV Stick, TV Box): 4K y formatos que no se decodifican por hardware
+  const ext = (m.file || '').split('.').pop().toLowerCase();
+  const warnings = [];
+  if (m.type === 'video' && !m.optimized) {
+    if (m.width > 1920 || m.height > 1920) warnings.push(`Resolución ${m.width}×${m.height}: puede trabarse en Fire TV Stick y TV Box`);
+    if (['webm', 'mkv', 'mov', 'ts', '3gp'].includes(ext)) warnings.push(`Formato .${ext}: use MP4 (H.264) para reproducir con fluidez`);
+    if (m.size > 300 * 1048576) warnings.push('Archivo muy grande: tardará en descargarse en las pantallas');
+  }
+  if (m.type === 'image' && m.size > 8 * 1048576) warnings.push('Imagen muy pesada: redúzcala a 1920×1080');
   const dur = h('input', { type: 'number', min: 0, value: m.duration, style: { width: '80px' }, title: m.type === 'video' ? '0 = duración completa del video' : 'Segundos en pantalla' });
   dur.addEventListener('change', () => guard(() => api('PUT', '/api/media/' + m.id, { duration: dur.value }).then(() => toast('Duración guardada'))));
   return h(
@@ -604,13 +633,33 @@ function mediaCard(m, reload) {
       'div',
       { class: 'meta' },
       h('div', { class: 'name', title: m.name }, m.name),
-      m.naturalDuration ? h('div', { class: 'muted' }, 'Duración del video: ' + fmtDur(m.naturalDuration)) : null,
+      m.naturalDuration ? h('div', { class: 'muted' }, 'Duración del video: ' + fmtDur(m.naturalDuration) + (m.width ? ` · ${m.width}×${m.height}` : '')) : null,
+      m.optimized ? h('span', { class: 'badge ok' }, '⚡ Optimizado para TV') : null,
+      m.optimizing ? h('span', { class: 'badge blue' }, '⏳ Optimizando… (puede tardar varios minutos)') : null,
+      m.optimizeError ? h('div', { class: 'error small' }, 'No se pudo optimizar: ' + m.optimizeError) : null,
+      warnings.map((w) => h('div', { class: 'warn-line' }, '⚠️ ' + w)),
       h('div', { class: 'muted' }, [TYPE_LABEL[m.type], m.size ? fmtBytes(m.size) : m.url, m.usedIn ? `en ${m.usedIn} lista(s)` : 'sin usar'].filter(Boolean).join(' · ')),
       h('div', { class: 'row' }, h('label', { class: 'shrink' }, 'Duración (s)', dur)),
       h(
         'div',
         { class: 'actions' },
         m.type === 'image' || m.type === 'video' ? h('a', { class: 'btn small', href: m.url, target: '_blank' }, 'Ver') : null,
+        m.type === 'video' && !m.optimizing && !m.optimized
+          ? h(
+              'button',
+              {
+                class: 'btn small' + (warnings.length ? ' primary' : ''),
+                title: systemInfo.ffmpeg ? 'Convierte a MP4 H.264 1080p, el formato más fluido en Fire TV y TV Box' : 'Requiere ffmpeg instalado en el servidor',
+                onclick: () =>
+                  guard(async () => {
+                    await api('POST', `/api/media/${m.id}/optimize`);
+                    toast('Optimizando el video. Las pantallas recibirán la versión optimizada al terminar.');
+                    reload();
+                  }),
+              },
+              '⚡ Optimizar para TV'
+            )
+          : null,
         h(
           'button',
           {

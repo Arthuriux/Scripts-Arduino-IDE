@@ -121,6 +121,35 @@ pages.ayuda = async (main) => {
       body: [h('p', null, 'En ', link('#/estadisticas', 'Estadísticas'), ' verá cuántas veces y cuánto tiempo se mostró cada contenido en cada pantalla. Descargue el CSV para entregarlo a sus anunciantes.')],
     },
     {
+      id: 'rendimiento',
+      icon: '⚡',
+      title: 'Fire TV Stick y TV Box económicos: que vaya fluido',
+      body: [
+        h('p', null, 'La app activa sola el ', h('b', null, 'modo ligero'), ' en Fire TV y en equipos de menos de 2,5 GB de RAM (puede forzarlo en Pantallas → Editar → Rendimiento). Además:'),
+        h(
+          'ul',
+          null,
+          h('li', null, h('b', null, 'Videos en MP4 (H.264) de 1080p como máximo. '), 'Los 4K, HEVC/H.265, WebM o MKV se traban en un Fire TV Stick normal. En la Biblioteca use "⚡ Optimizar para TV" (requiere ffmpeg en el servidor).'),
+          h('li', null, h('b', null, 'Un solo video a la vez. '), 'En los layouts, ponga el video en una sola zona; en las demás use imágenes. En modo ligero las otras zonas omiten los videos automáticamente.'),
+          h('li', null, h('b', null, 'Imágenes JPG de 1920 × 1080 '), '(no fotos de 12 MP ni PNG enormes). Evite GIF animados.'),
+          h('li', null, 'Evite las páginas web como contenido: el navegador interno consume mucha memoria.'),
+          h('li', null, 'Transición "Ninguna" o "Fundido" (no "Deslizar") en las listas de pantallas modestas.')
+        ),
+        h('p', null, h('b', null, 'Ajustes del Fire TV: ')),
+        h(
+          'ol',
+          null,
+          h('li', null, 'Configuración → Preferencias → Contenido destacado: desactive la reproducción automática de video y audio.'),
+          h('li', null, 'Configuración → Pantalla y sonido → Salvapantallas: tiempo de inicio "Nunca". Y "Suspender pantalla": nunca.'),
+          h('li', null, 'Configuración → Preferencias → Configuración de privacidad: desactive "Recopilar datos de uso de apps" y "Uso de datos del dispositivo".'),
+          h('li', null, 'Configuración → Aplicaciones → Administrar aplicaciones instaladas: desinstale lo que no use y "Forzar detención" de apps abiertas.'),
+          h('li', null, 'Conecte el Fire TV a su propio cargador (no al USB de la TV) y, si puede, por cable de red con el adaptador Ethernet de Amazon.'),
+          h('li', null, 'Reinícielo una vez al día (por ejemplo con un enchufe programable) para liberar memoria.')
+        ),
+        tip('Para videowalls o layouts con varios videos se recomienda Fire TV Stick 4K Max, Chromecast con Google TV o un TV Box con 4 GB de RAM.'),
+      ],
+    },
+    {
       id: 'reproductor',
       icon: '📱',
       title: 'Menú oculto del reproductor Android',

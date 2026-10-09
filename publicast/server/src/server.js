@@ -52,6 +52,10 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
       if (d.defaultContent === undefined) d.defaultContent = d.defaultPlaylistId ? 'p:' + d.defaultPlaylistId : '';
       if (d.authorized && !d.number) d.number = next++;
     });
+    // Una optimización interrumpida por un reinicio del servidor no debe quedar "en curso"
+    db.get('media').forEach((m) => {
+      if (m.optimizing) m.optimizing = false;
+    });
     db.get('schedules').forEach((s) => {
       if (!s.content && s.playlistId) s.content = 'p:' + s.playlistId;
       if (!s.wallIds) s.wallIds = [];
@@ -341,17 +345,91 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     const patch = {};
     if (req.body.name !== undefined) patch.name = str(req.body.name, 200) || m.name;
     if (req.body.duration !== undefined) patch.duration = num(req.body.duration, m.duration, 0);
-    if (req.body.naturalDuration !== undefined && m.type === 'video') patch.naturalDuration = num(req.body.naturalDuration, 0, 0, 86400 * 7);
+    const oldNatural = m.naturalDuration;
+    // Metadatos que detecta el panel al cargar el video (duración real y resolución)
+    if (m.type === 'video') {
+      if (req.body.naturalDuration !== undefined) patch.naturalDuration = num(req.body.naturalDuration, 0, 0, 86400 * 7);
+      if (req.body.width !== undefined) patch.width = num(req.body.width, 0, 0, 20000);
+      if (req.body.height !== undefined) patch.height = num(req.body.height, 0, 0, 20000);
+    }
     try {
       if (m.type === 'web' || m.type === 'text') Object.assign(patch, widgetFields({ ...m, ...req.body }, m.type));
     } catch (e) {
       return bad(res, e.message);
     }
-    const onlyNatural = Object.keys(patch).length === 1 && patch.naturalDuration !== undefined;
+    const onlyMeta = Object.keys(patch).every((k) => ['naturalDuration', 'width', 'height'].includes(k));
     db.update('media', m.id, patch);
-    if (!onlyNatural || m.naturalDuration !== patch.naturalDuration) changed('media');
+    if (!onlyMeta || (patch.naturalDuration !== undefined && patch.naturalDuration !== oldNatural)) changed('media');
     res.json(db.find('media', m.id));
   });
+
+  // ---------- Optimización de videos para TV Box / Fire TV (requiere ffmpeg) ----------
+  const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
+  let ffmpegOk = false;
+  require('child_process')
+    .spawn(FFMPEG, ['-version'], { stdio: 'ignore' })
+    .on('error', () => (ffmpegOk = false))
+    .on('close', (code) => (ffmpegOk = code === 0));
+  const optimizeQueue = [];
+  let optimizing = false;
+
+  app.get('/api/system', requireAdmin, (req, res) => res.json({ ffmpeg: ffmpegOk }));
+
+  app.post('/api/media/:id/optimize', requireAdmin, (req, res) => {
+    const m = db.find('media', req.params.id);
+    if (!m || m.type !== 'video') return bad(res, 'Seleccione un video', 404);
+    if (!ffmpegOk)
+      return bad(res, 'ffmpeg no está instalado en el servidor. En Windows: "winget install ffmpeg" (o descárguelo de ffmpeg.org) y reinicie el servidor.');
+    if (m.optimizing) return bad(res, 'Este video ya se está optimizando', 409);
+    db.update('media', m.id, { optimizing: true, optimizeError: '' });
+    optimizeQueue.push(m.id);
+    runOptimizeQueue();
+    res.json({ queued: optimizeQueue.length });
+  });
+
+  /** Convierte a MP4 H.264 ≤1080p con "faststart": el formato que mejor decodifica cualquier TV Box. */
+  function runOptimizeQueue() {
+    if (optimizing || !optimizeQueue.length) return;
+    const m = db.find('media', optimizeQueue.shift());
+    if (!m || !m.file) return runOptimizeQueue();
+    optimizing = true;
+    const input = path.join(mediaDir, m.file);
+    const outName = newId() + '.mp4';
+    const output = path.join(mediaDir, outName);
+    const args = [
+      '-y', '-i', input,
+      '-vf', "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
+      '-c:v', 'libx264', '-profile:v', 'high', '-level', '4.1', '-preset', 'veryfast', '-crf', '23',
+      '-maxrate', '8M', '-bufsize', '16M', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', output,
+    ];
+    log(`Optimizando video "${m.name}"…`);
+    const proc = require('child_process').spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    proc.stderr.on('data', (d) => (stderr = (stderr + d).slice(-2000)));
+    const finish = async (ok, err) => {
+      optimizing = false;
+      const cur = db.find('media', m.id);
+      if (!cur) {
+        fs.rm(output, { force: true }, () => {});
+      } else if (ok) {
+        const size = fs.statSync(output).size;
+        const md5 = await md5File(output);
+        const old = cur.file;
+        db.update('media', m.id, { file: outName, mime: 'video/mp4', size, md5, optimizing: false, optimized: true, width: 0, height: 0 });
+        if (old && old !== outName) fs.rm(path.join(mediaDir, old), { force: true }, () => {});
+        changed('media');
+        log(`Video optimizado: "${m.name}" (${Math.round(size / 1048576)} MB)`);
+      } else {
+        fs.rm(output, { force: true }, () => {});
+        db.update('media', m.id, { optimizing: false, optimizeError: err || 'Error de ffmpeg' });
+        log(`No se pudo optimizar "${m.name}": ${err}`);
+      }
+      runOptimizeQueue();
+    };
+    proc.on('error', (e) => finish(false, e.message));
+    proc.on('close', (code) => (code === 0 ? finish(true) : finish(false, stderr.split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 300))));
+  }
 
   app.delete('/api/media/:id', requireAdmin, (req, res) => {
     const m = db.find('media', req.params.id);
@@ -683,6 +761,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
         ? req.body.orientation
         : 'auto';
     if (req.body.location !== undefined) patch.location = str(req.body.location, 200);
+    if (req.body.performance !== undefined) patch.performance = ['auto', 'lite', 'high'].includes(req.body.performance) ? req.body.performance : 'auto';
     db.update('displays', d.id, patch);
     changed('display');
     res.json(publicDisplay(db.find('displays', d.id)));
@@ -949,7 +1028,7 @@ function createApp({ dataDir = DATA_DIR, quiet = false } = {}) {
     return {
       version: db.contentVersion,
       serverTime: new Date().toISOString(),
-      display: { id: d.id, name: d.name, number: d.number || 0, orientation: d.orientation || 'auto' },
+      display: { id: d.id, name: d.name, number: d.number || 0, orientation: d.orientation || 'auto', performance: d.performance || 'auto' },
       wall: w
         ? { id: w.wall.id, name: w.wall.name, rows: w.wall.rows, cols: w.wall.cols, row: w.cell.row, col: w.cell.col }
         : null,

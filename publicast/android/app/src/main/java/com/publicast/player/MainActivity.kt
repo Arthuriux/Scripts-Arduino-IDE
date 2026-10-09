@@ -56,6 +56,7 @@ class MainActivity : Activity(), SyncManager.Listener {
     private var canvas: FrameLayout? = null
     private var renderKey: String? = null
     private var playbackStarted = false
+    private var liteActive = false
 
     private val scheduleCheck = object : Runnable {
         override fun run() {
@@ -328,6 +329,9 @@ class MainActivity : Activity(), SyncManager.Listener {
         canvas = c
         val syncMode = wall != null
         val screenMin = minOf(screenW, screenH)
+        val lite = DeviceProfile.liteMode(this, manifest?.performance)
+        liteActive = lite
+        val tickerFps = if (lite) 30 else 60
 
         fun region(x: Float, y: Float, w: Float, h: Float): FrameLayout {
             val f = FrameLayout(this)
@@ -341,7 +345,7 @@ class MainActivity : Activity(), SyncManager.Listener {
         }
 
         fun player(container: FrameLayout, items: List<Item>, p: Playlist) {
-            val rp = RegionPlayer(this, container, items, p, cache, decoder, syncMode, screenMin, { serverNow() }) { item, started, secs ->
+            val rp = RegionPlayer(this, container, items, p, cache, decoder, syncMode, lite, screenMin, { serverNow() }) { item, started, secs ->
                 sync?.recordPlay(item, started, secs)
             }
             regions.add(rp)
@@ -360,25 +364,28 @@ class MainActivity : Activity(), SyncManager.Listener {
                     val lp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (textPx * 1.8f).toInt())
                     lp.gravity = if (t.position == "top") Gravity.TOP else Gravity.BOTTOM
                     c.addView(tv, lp)
-                    tv.configure(t, textPx)
+                    tv.configure(t, textPx, tickerFps)
                 }
             }
             is Content.Layout -> {
                 val m = manifest ?: return
                 c.setBackgroundColor(content.layout.background)
+                // Modo ligero: sólo la zona de lista más grande reproduce videos (un único decodificador)
+                val videoRegion = content.layout.regions.filter { it.type == "playlist" }.maxByOrNull { it.w * it.h }?.id
                 content.layout.regions.forEach { r ->
                     val f = region(r.x, r.y, r.w, r.h)
                     when (r.type) {
                         "ticker" -> r.ticker?.takeIf { it.text.isNotBlank() }?.let { t ->
                             val tv = TickerView(this)
                             f.addView(tv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                            tv.configure(t, screenH * t.size / 100f)
+                            tv.configure(t, screenH * t.size / 100f, tickerFps)
                         }
                         "clock" -> r.clock?.let { cs ->
                             f.addView(ClockView(this, cs, screenH) { serverNow() }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
                         }
                         else -> r.playlistId?.let { m.playlists[it] }?.let { p ->
-                            val items = playableItems(p)
+                            val all = playableItems(p)
+                            val items = if (lite && r.id != videoRegion) all.filter { it.type != "video" } else all
                             if (items.isNotEmpty()) player(f, items, p)
                         }
                     }
@@ -565,6 +572,7 @@ class MainActivity : Activity(), SyncManager.Listener {
             appendLine("Versión de contenido: ${m?.version ?: "-"}")
             appendLine("Reproduciendo: ${currentItem()?.name ?: "-"}")
             appendLine("Diferencia de reloj con el servidor: ${sync?.clockOffsetMs ?: 0} ms")
+            appendLine("Modo ligero: ${if (liteActive) "activado" else "desactivado"} (ajuste: ${m?.performance ?: "auto"}) · RAM ${DeviceProfile.totalRamMb(this@MainActivity)} MB")
             appendLine("Archivos en caché: $files (${size / (1024 * 1024)} MB)")
             appendLine("Espacio libre: ${cache.freeSpace() / (1024 * 1024)} MB")
             appendLine("App: ${BuildConfigCompat.versionName(this@MainActivity)}")

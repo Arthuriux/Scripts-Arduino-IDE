@@ -210,3 +210,5 @@ table.sched td { vertical-align: middle; }
 @media (max-width: 980px) {
   .leditor { grid-template-columns: 1fr; }
 }
+
+.warn-line { color: var(--warn); font-size: 12px; line-height: 1.35; }
